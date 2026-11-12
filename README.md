@@ -105,3 +105,7 @@ card at the bottom of the page. In short:
 - The governor has perfect state knowledge; there is no observer or model-mismatch margin.
 - If the electrolyte fully depletes (very high CC rates, or cold), the SPMe is outside its
   validity range. The page flags this.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
