@@ -38,6 +38,12 @@ then visit <http://localhost:8791>. Opening `index.html` directly from disk also
 | `app.js` | Sliders, plots, trade-off chart, state snapshots, CSV export. |
 | `index.html` | Page layout, styles, and the "Model and assumptions" notes. |
 
+## Technical documentation
+
+[`docs/spmet_reference_governor.pdf`](docs/spmet_reference_governor.pdf) (LaTeX source alongside) specifies the SPMeT
+model equations, the discretisation as coded, both parameter sets with sources, the reference-governor
+algorithm, and benchmark numbers for checking a re-implementation.
+
 ## Verify lithium conservation
 
 ```bash

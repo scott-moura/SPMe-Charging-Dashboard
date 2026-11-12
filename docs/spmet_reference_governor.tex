@@ -1,0 +1,572 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\newcommand{\cs}{c_{s}}
+\newcommand{\ce}{c_{e}}
+\newcommand{\css}{c_{ss}}
+\newcommand{\cmax}{c_{\max}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\pd}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\Tref}{T_{\mathrm{ref}}}
+\newcommand{\Tamb}{T_{\mathrm{amb}}}
+\newcommand{\etapl}{\eta_{\mathrm{pl}}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\unit}[1]{\,\mathrm{#1}}
+
+\title{SPMeT Fast-Charging Simulator:\\ Model Equations, Numerical Implementation,\\ Parameters, and Reference Governor}
+\author{Technical documentation for\\ \url{https://github.com/scott-moura/SPMe-Charging-Dashboard}}
+\date{November 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent This document specifies the model and the controllers implemented in the browser-based fast-charging simulator (\code{spme.js}): a single particle model with electrolyte and lumped thermal dynamics (SPMeT), two side reactions that tally capacity loss (SEI growth and lithium plating), a constant-current/constant-voltage (CC-CV) charger, and a reference governor that enforces constraints on internal electrochemical states. It gives the continuous-time equations, the discretisation exactly as coded, the two parameter sets (an NMC811/graphite-SiO$_x$ cell and a LiFePO$_4$/graphite cell) with their sources, and benchmark numbers against which a re-implementation can be checked.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Scope and conventions}
+%======================================================================
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Sign convention.} The applied current $I$ [A] is \emph{positive for charging}. This is the opposite of the convention in most of the DFN literature and in PyBaMM.
+\item \textbf{Geometry.} The through-thickness coordinate $x$ runs from the anode current collector ($x=0$) through the anode ($0<x<L_n$), the separator ($L_n<x<L_n+L_s$) and the cathode ($L_n+L_s<x<L$), with $L=L_n+L_s+L_p$. Subscripts $n$, $s$, $p$ denote anode, separator and cathode; $j\in\{n,p\}$ denotes an electrode.
+\item \textbf{Units.} SI throughout: concentrations in mol\,m$^{-3}$, potentials in V, temperature in K. Capacity-loss tallies are in Ah.
+\item \textbf{Constants.} $F=96485.33212\unit{C\,mol^{-1}}$, $R_g=8.314462618\unit{J\,mol^{-1}K^{-1}}$, $\Tref=298.15\unit{K}$.
+\end{itemize}
+
+\paragraph{States.} The model state is
+\begin{equation}
+x=\bigl[\,\cs^{n}(r,t),\;\cs^{p}(r,t),\;\ce(x,t),\;T(t),\;Q_{\mathrm{sei}}(t),\;Q_{\mathrm{pl}}(t)\,\bigr],
+\end{equation}
+that is, the lithium concentration in one representative spherical particle per electrode, the electrolyte concentration across the cell, the lumped cell temperature, and two capacity-loss tallies. After discretisation (Section~\ref{sec:numerics}) the state has $2N_r+N_e+3=66$ entries.
+
+\paragraph{Derived geometric quantities.} For each electrode, the specific interfacial area and the total active surface are
+\begin{equation}
+a_j=\frac{3\,\eps_{s,j}}{R_j},\qquad S_j=a_j L_j A ,
+\end{equation}
+where $\eps_{s,j}$ is the active-material volume fraction, $R_j$ the particle radius, $L_j$ the electrode thickness and $A$ the electrode plate area.
+
+%======================================================================
+\section{Model equations}\label{sec:model}
+%======================================================================
+
+The model follows the SPMe structure of Moura et al.~\cite{moura2017} and Marquis et al.~\cite{marquis2019}, obtained from the Doyle--Fuller--Newman (DFN) model~\cite{doyle1993} by assuming that the interfacial reaction current is uniform across each electrode.
+
+\subsection{Solid-phase diffusion}
+In each electrode, lithium diffuses in a sphere of radius $R_j$:
+\begin{align}
+\pd{\cs^{j}}{t} &= \frac{D_{s,j}(T)}{r^{2}}\pd{}{r}\!\left(r^{2}\pd{\cs^{j}}{r}\right), & 0<r<R_j, \label{eq:solid}\\
+\pd{\cs^{j}}{r}\Big|_{r=0} &= 0, \qquad D_{s,j}(T)\,\pd{\cs^{j}}{r}\Big|_{r=R_j}=J_j ,
+\end{align}
+where $J_j$ is the molar flux \emph{into} the particle,
+\begin{equation}
+J_n=\frac{I}{F\,S_n},\qquad J_p=-\frac{I}{F\,S_p}. \label{eq:flux}
+\end{equation}
+The surface concentration is $\css^{j}=\cs^{j}(R_j,t)$, the volume average is $\bar c_s^{j}=\frac{3}{R_j^{3}}\int_0^{R_j} r^{2}\cs^{j}\,\dd r$, and the corresponding stoichiometries are $\theta_{ss,j}=\css^{j}/c_{\max,j}$ and $\bar\theta_j=\bar c_s^{j}/c_{\max,j}$.
+
+\subsection{Electrolyte diffusion}
+\begin{equation}
+\eps_e(x)\,\pd{\ce}{t}=\pd{}{x}\!\left(D_e^{\mathrm{eff}}\,\pd{\ce}{x}\right)+s(x)\,I,
+\qquad D_e^{\mathrm{eff}}=D_e(\ce)\,\psi_{D_e}(T)\,\eps_e(x)^{b}, \label{eq:elyte}
+\end{equation}
+with zero flux at both current collectors, $\partial\ce/\partial x=0$ at $x=0$ and $x=L$, and continuity of concentration and flux at the electrode\,$|$\,separator interfaces. The source term per ampere is uniform in each electrode,
+\begin{equation}
+s(x)=\begin{cases}
+-\dfrac{1-t_+}{F A L_n}, & 0<x<L_n \quad\text{(anode)},\\[2mm]
+0, & L_n<x<L_n+L_s \quad\text{(separator)},\\[1mm]
++\dfrac{1-t_+}{F A L_p}, & L_n+L_s<x<L \quad\text{(cathode)}.
+\end{cases}\label{eq:source}
+\end{equation}
+Here $\eps_e$ is the electrolyte volume fraction, $b$ the Bruggeman exponent and $t_+$ the cation transference number. Because $\int_0^L s\,\dd x=0$, the electrolyte lithium inventory $A\int_0^L \eps_e\ce\,\dd x$ is conserved.
+
+\subsection{Temperature dependence}
+All temperature-dependent parameters follow an Arrhenius law,
+\begin{equation}
+\psi_{E}(T)=\exp\!\left[\frac{E}{R_g}\left(\frac{1}{\Tref}-\frac{1}{T}\right)\right],\label{eq:arr}
+\end{equation}
+applied to $D_{s,j}$, the reaction rate constants $k_j$, $D_e$, the electrolyte conductivity $\kappa$ and the SEI rate, each with its own activation energy $E$ (Section~\ref{sec:params}).
+
+\subsection{Interfacial kinetics}
+Butler--Volmer kinetics with symmetric transfer coefficients ($\alpha=0.5$) and a uniform reaction current give a closed form for the overpotential:
+\begin{align}
+i_{0,j}&=k_j\,\psi_{k_j}(T)\,\sqrt{\bar c_{e,j}}\,\sqrt{\css^{j}\,(c_{\max,j}-\css^{j})}, \label{eq:i0}\\
+\eta_n&=-\frac{2R_gT}{F}\,\sinh^{-1}\!\left(\frac{I}{2\,S_n\,i_{0,n}}\right),\qquad
+\eta_p=+\frac{2R_gT}{F}\,\sinh^{-1}\!\left(\frac{I}{2\,S_p\,i_{0,p}}\right), \label{eq:eta}
+\end{align}
+where $\bar c_{e,j}$ is the electrolyte concentration averaged over electrode $j$. In (\ref{eq:i0}) and in the open-circuit potentials, the surface stoichiometry is clipped to $[10^{-4},\,1-10^{-4}]$. The interfacial potential differences ($\phi_s-\phi_e$, averaged over each electrode) are
+\begin{equation}
+\Phi_n=U_n(\theta_{ss,n})+\eta_n,\qquad \Phi_p=U_p(\theta_{ss,p})+\eta_p, \label{eq:Phi}
+\end{equation}
+with $U_j$ the open-circuit potentials given in Section~\ref{sec:params}.
+
+\subsection{Electrolyte potential}
+The electrolyte potential satisfies the concentrated-solution form of Ohm's law~\cite{doyle1993} with unit thermodynamic factor,
+\begin{equation}
+\pd{\phi_e}{x}=\frac{I}{A}\,\frac{f(x)}{\kappa^{\mathrm{eff}}}+\frac{2R_gT}{F}\,(1-t_+)\,\pd{\ln\ce}{x},
+\qquad \kappa^{\mathrm{eff}}=\kappa(\ce)\,\psi_{\kappa}(T)\,\eps_e(x)^{b}, \label{eq:phie}
+\end{equation}
+where $f(x)\in[0,1]$ is the fraction of the applied current carried by the electrolyte. With a uniform reaction current it is piecewise linear,
+\begin{equation}
+f(x)=\min\!\left(1,\ \frac{x}{L_n},\ \frac{L-x}{L_p}\right).
+\end{equation}
+(During charging the ionic current flows in the $-x$ direction, $i_e=-(I/A)f(x)$, which gives the sign of the first term.) The potential is referenced arbitrarily; only differences enter the outputs. Unlike the closed-form approximations in \cite{moura2017,marquis2019}, (\ref{eq:phie}) is integrated numerically on the electrolyte grid with concentration-dependent $\kappa$ (Section~\ref{sec:phie-num}).
+
+\subsection{Terminal voltage}
+With $\bar\phi_{e,j}$ the average of $\phi_e$ over electrode $j$,
+\begin{equation}
+V=\Phi_p-\Phi_n+\bigl(\bar\phi_{e,p}-\bar\phi_{e,n}\bigr)+I\,R_{s},\qquad
+R_s=\frac{1}{A}\left(\frac{L_n}{3\,\sigma_n^{\mathrm{eff}}}+\frac{L_p}{3\,\sigma_p^{\mathrm{eff}}}\right),\label{eq:V}
+\end{equation}
+where $\sigma_j^{\mathrm{eff}}=\sigma_j\,(1-\eps_{e,j})^{b_s}$ is the effective electronic conductivity and the $L/3\sigma$ form is the electrode-averaged solid-phase ohmic drop of~\cite{marquis2019}.
+
+\subsection{Plating overpotential}
+Lithium plating is thermodynamically possible where $\phi_s-\phi_e<0$ against Li/Li$^+$~\cite{arora1999}. It is most negative at the anode\,$|$\,separator interface. Taking the solid potential as uniform across the anode, the model evaluates
+\begin{equation}
+\etapl=\Phi_n-\bigl(\phi_e(L_n)-\bar\phi_{e,n}\bigr). \label{eq:etapl}
+\end{equation}
+This construction is specific to this tool; it is not taken from \cite{moura2017} or \cite{marquis2019}. Its accuracy against a DFN model is discussed in Section~\ref{sec:verification}.
+
+\subsection{Lumped thermal model}
+\begin{equation}
+C_{\mathrm{th}}\,\frac{\dd T}{\dd t}=\underbrace{I\,\bigl(V-U_{\mathrm{ocv}}\bigr)}_{\dot Q_{\mathrm{gen}}}-hA_s\,(T-\Tamb),\qquad
+U_{\mathrm{ocv}}=U_p(\bar\theta_p)-U_n(\bar\theta_n). \label{eq:thermal}
+\end{equation}
+This is the energy balance of Bernardi et al.~\cite{bernardi1985} without the entropic (reversible) term. Because $U_{\mathrm{ocv}}$ is evaluated at the \emph{bulk-average} stoichiometries, $\dot Q_{\mathrm{gen}}$ includes the heat released as concentration gradients inside the particles relax (``heat of mixing'').
+
+\subsection{Side reactions and capacity loss}
+Two cathodic side reactions at the anode surface are evaluated per unit of anode active area and integrated into capacity-loss tallies. They are \emph{not} fed back: lithium is not removed from the anode and no film resistance is added.
+\begin{align}
+i_{\mathrm{sei}}&=i_{0,\mathrm{sei}}\;\psi_{\mathrm{sei}}(T)\,\exp\!\left[-\frac{\alpha_{\mathrm{sei}}F}{R_gT}\,\bigl(\Phi_n-U_{\mathrm{sei}}\bigr)\right], \label{eq:sei}\\
+i_{\mathrm{pl}}&=\begin{cases}
+\min\!\left\{\,i_{0,\mathrm{pl}}\left[\exp\!\left(-\dfrac{\alpha_{\mathrm{pl}}F}{R_gT}\,\etapl\right)-1\right],\ \dfrac{\max(I,0)}{S_n}\right\}, & \etapl<0,\\[3mm]
+0, & \etapl\ge 0,
+\end{cases} \label{eq:pl}\\
+\frac{\dd Q_{\mathrm{sei}}}{\dd t}&=\frac{i_{\mathrm{sei}}\,S_n}{3600},\qquad \frac{\dd Q_{\mathrm{pl}}}{\dd t}=\frac{i_{\mathrm{pl}}\,S_n}{3600}\qquad[\mathrm{Ah\,s^{-1}}].
+\end{align}
+Equation (\ref{eq:sei}) is the reaction-limited (Tafel) SEI model of Ramadass et al.~\cite{ramadass2004} in the form used in \cite{okane2022}. Equation (\ref{eq:pl}) is an irreversible plating reaction in the spirit of \cite{arora1999,yang2017}, with no stripping; the plating current is capped at the applied current density. The arguments of both exponentials are capped at 40 for numerical safety.
+
+\subsection{State of charge, capacity and initial condition}
+State of charge is defined on the anode,
+\begin{equation}
+\mathrm{SOC}=\frac{\bar\theta_n-\theta_{n,0}}{\theta_{n,100}-\theta_{n,0}},
+\end{equation}
+the cell capacity is that of the anode stoichiometry window, and the cathode stoichiometry at 0\,\% SOC follows from the lithium balance:
+\begin{equation}
+Q=\frac{\eps_{s,n}L_nA\,c_{\max,n}F\,(\theta_{n,100}-\theta_{n,0})}{3600}\ [\mathrm{Ah}],\qquad
+\theta_{p,0}=\theta_{p,100}+\frac{3600\,Q}{\eps_{s,p}L_pA\,c_{\max,p}F}. \label{eq:Q}
+\end{equation}
+A charge from $\mathrm{SOC}_0$ starts at rest: both particles uniform at $\theta_j=\theta_{j,0}+\mathrm{SOC}_0(\theta_{j,100}-\theta_{j,0})$, $\ce=c_{e,0}$ everywhere, $T=\Tamb$, $Q_{\mathrm{sei}}=Q_{\mathrm{pl}}=0$. C-rates are defined against $Q$ from (\ref{eq:Q}).
+
+%======================================================================
+\section{Numerical implementation}\label{sec:numerics}
+%======================================================================
+
+Both diffusion equations are discretised with conservative finite volumes and advanced with implicit (backward) Euler. Each sub-step requires one tridiagonal solve (Thomas algorithm). The sub-models are coupled by operator splitting within a time step (Section~\ref{sec:order}).
+
+\subsection{Particles: finite volumes in $r$}\label{sec:particle-num}
+Each particle is divided into $N_r=20$ concentric shells of equal thickness $\Delta r=R_j/N_r$. Shell $i\in\{0,\dots,N_r-1\}$ occupies $i\Delta r<r<(i+1)\Delta r$ and carries the cell-average concentration $c_i$. Normalising shell volumes by $\Delta r^{3}$ and face areas by $\Delta r^{2}$ (the factor $4\pi$ cancels),
+\begin{equation}
+w_i=\frac{(i+1)^{3}-i^{3}}{3},\qquad \alpha_i=i^{2}\quad(i=0,\dots,N_r),\qquad \sum_{i}w_i=\frac{N_r^{3}}{3}.
+\end{equation}
+With $\mu=D_{s,j}(T^{k})\,\Delta t/\Delta r^{2}$, backward Euler on the flux-form of (\ref{eq:solid}) gives, for each shell,
+\begin{equation}
+-\mu\alpha_i\,c_{i-1}^{k+1}+\bigl(w_i+\mu\alpha_i+\mu\alpha_{i+1}'\bigr)c_i^{k+1}-\mu\alpha_{i+1}'\,c_{i+1}^{k+1}
+= w_i\,c_i^{k}+\delta_{i,N_r-1}\,\frac{\Delta t\,N_r^{2}}{\Delta r}\,J_j^{k},
+\label{eq:particle-disc}
+\end{equation}
+where $\alpha_{i+1}'=\alpha_{i+1}$ for $i<N_r-1$ and $\alpha_{N_r}'=0$ (the surface flux enters through the right-hand side), and $\alpha_0=0$ enforces symmetry at the centre. Summing (\ref{eq:particle-disc}) over $i$ shows that $\sum_i w_ic_i$ changes by exactly $\Delta t\,N_r^{2}J_j/\Delta r$ per step, i.e.\ $\Delta\bar c_s=3J_j\Delta t/R_j$: the scheme conserves lithium to round-off for any $\Delta t$.
+
+The volume average and the surface concentration are
+\begin{equation}
+\bar c_s=\frac{3}{N_r^{3}}\sum_{i=0}^{N_r-1}w_ic_i,\qquad
+\css=c_{N_r-1}+\frac{J_j\,\Delta r}{2\,D_{s,j}(T)}, \label{eq:css}
+\end{equation}
+the latter a half-cell extrapolation from the outermost cell centre using the imposed surface flux.
+
+\subsection{Electrolyte: finite volumes in $x$}\label{sec:elyte-num}
+The electrolyte grid has $N_n=10$, $N_s=3$ and $N_p=10$ uniform cells in the anode, separator and cathode ($N_e=23$). Cell $j$ has width $\Delta x_j$, volume fraction $\eps_j$, Bruggeman factor $\eps_j^{b}$ and source $s_j$ from (\ref{eq:source}). The diffusive conductance between cells $j$ and $j+1$ is the series (harmonic) combination of two half cells,
+\begin{equation}
+g_{j+\frac12}=\left(\frac{\Delta x_j}{2D_j^{\mathrm{eff}}}+\frac{\Delta x_{j+1}}{2D_{j+1}^{\mathrm{eff}}}\right)^{-1},\qquad
+D_j^{\mathrm{eff}}=D_e\bigl(\max(c_j^{k},1)\bigr)\,\psi_{D_e}(T^{k})\,\eps_j^{b},
+\end{equation}
+which handles the jump in porosity at the interfaces without special treatment. The diffusivity is lagged (evaluated at the old concentration and temperature), so the step is linear:
+\begin{equation}
+-g_{j-\frac12}c_{j-1}^{k+1}+\bigl(m_j+g_{j-\frac12}+g_{j+\frac12}\bigr)c_j^{k+1}-g_{j+\frac12}c_{j+1}^{k+1}=m_jc_j^{k}+s_j\,I^{k}\,\Delta x_j,
+\qquad m_j=\frac{\eps_j\Delta x_j}{\Delta t},\label{eq:elyte-disc}
+\end{equation}
+with $g_{-\frac12}=g_{N_e-\frac12}=0$. Since $\sum_j s_j\Delta x_j=0$, the inventory $\sum_j\eps_j\Delta x_jc_j$ is conserved exactly.
+
+\paragraph{Conservative positivity limiter.} At high rate or low temperature the electrolyte at the anode collector can deplete, and (\ref{eq:elyte-disc}) can then return non-physical concentrations. After the solve, any cell below the floor $c_{\mathrm{fl}}=1\unit{mol\,m^{-3}}$ is raised to the floor using lithium taken from its neighbour, first sweeping toward the cathode and then back:
+\begin{align}
+&\text{for } j=0,\dots,N_e-2:\ \text{if } c_j<c_{\mathrm{fl}}:\quad c_{j+1}\leftarrow c_{j+1}-(c_{\mathrm{fl}}-c_j)\frac{\eps_j\Delta x_j}{\eps_{j+1}\Delta x_{j+1}},\quad c_j\leftarrow c_{\mathrm{fl}};\\
+&\text{for } j=N_e-1,\dots,1:\ \text{if } c_j<c_{\mathrm{fl}}:\quad c_{j-1}\leftarrow c_{j-1}-(c_{\mathrm{fl}}-c_j)\frac{\eps_j\Delta x_j}{\eps_{j-1}\Delta x_{j-1}},\quad c_j\leftarrow c_{\mathrm{fl}}.
+\end{align}
+This keeps $\ln\ce$ defined without creating lithium. (A plain clamp $c_j\leftarrow\max(c_j,c_{\mathrm{fl}})$ adds several percent of lithium in depleting cases.) Once the electrolyte is depleted the uniform-reaction assumption has failed and results are indicative only.
+
+\subsection{Electrolyte potential: quadrature of (\ref{eq:phie})}\label{sec:phie-num}
+Define the half-cell ohmic resistance and the diffusion-potential coefficient
+\begin{equation}
+\rho_j=\frac{\Delta x_j}{2\,\kappa_j^{\mathrm{eff}}},\qquad
+\kappa_j^{\mathrm{eff}}=\max\!\bigl(\kappa(c_j)\,\psi_\kappa(T),\,10^{-4}\bigr)\,\eps_j^{b},\qquad
+k_d=\frac{2R_gT}{F}(1-t_+).
+\end{equation}
+Cell-centre potentials are accumulated from $\phi_0=0$:
+\begin{equation}
+\phi_j=\phi_{j-1}+\frac{I}{A}\,f_{j-\frac12}\,(\rho_{j-1}+\rho_j)+k_d\,\bigl(\ln c_j-\ln c_{j-1}\bigr),\qquad j=1,\dots,N_e-1,
+\end{equation}
+with $f_{j-\frac12}=\min\bigl(1,\,x_{j-\frac12}/L_n,\,(L-x_{j-\frac12})/L_p\bigr)$ evaluated at the face between cells $j-1$ and $j$. The electrode averages are arithmetic means over the cells of each electrode,
+$\bar\phi_{e,n}=\frac{1}{N_n}\sum_{j<N_n}\phi_j$ and $\bar\phi_{e,p}=\frac{1}{N_p}\sum_{j\ge N_n+N_s}\phi_j$; likewise $\bar c_{e,n}$ and $\bar c_{e,p}$ in (\ref{eq:i0}). The potential at the anode\,$|$\,separator face, needed in (\ref{eq:etapl}), is
+\begin{equation}
+\phi_e(L_n)=\phi_{N_n-1}+\frac{I}{A}\,\rho_{N_n-1}+\tfrac12\,k_d\,\bigl(\ln c_{N_n}-\ln c_{N_n-1}\bigr),
+\end{equation}
+i.e.\ the ohmic drop across the last anode half cell (where $f\approx1$) plus half of the diffusion-potential step across the face.
+
+\subsection{Order of operations in one time step}\label{sec:order}
+Given the state $x^{k}$, a current $I^{k}$ held constant over the step, the step size $\Delta t$ and $\Tamb$, the function \code{step()} performs:
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Particles.} Solve (\ref{eq:particle-disc}) for each electrode with $D_{s,j}(T^{k})$ and $J_j^{k}$ from (\ref{eq:flux}).
+\item \textbf{Electrolyte.} Solve (\ref{eq:elyte-disc}) with $T^{k}$, then apply the limiter.
+\item \textbf{Outputs.} Evaluate (\ref{eq:css}), (\ref{eq:i0})--(\ref{eq:Phi}), the potential quadrature, (\ref{eq:V}), (\ref{eq:etapl}), (\ref{eq:sei})--(\ref{eq:pl}) and $\dot Q_{\mathrm{gen}}$ at the \emph{new} concentrations, the current $I^{k}$ and the \emph{old} temperature $T^{k}$. These are the outputs reported for time $t^{k+1}$.
+\item \textbf{Temperature.} Backward Euler on the cooling term of (\ref{eq:thermal}) with the heat generation from step 3:
+\begin{equation}
+T^{k+1}=\frac{T^{k}+\dfrac{\Delta t}{C_{\mathrm{th}}}\bigl(\dot Q_{\mathrm{gen}}+hA_s\Tamb\bigr)}{1+\dfrac{\Delta t}{C_{\mathrm{th}}}\,hA_s}.
+\end{equation}
+\item \textbf{Capacity loss.} Forward Euler: $Q_{\mathrm{sei}}^{k+1}=Q_{\mathrm{sei}}^{k}+i_{\mathrm{sei}}S_n\Delta t/3600$, and likewise for $Q_{\mathrm{pl}}$.
+\end{enumerate}
+The scheme is first-order accurate in time. There is no nonlinear iteration: every sub-step is a linear solve or an explicit formula, which is what makes it cheap enough to re-run on every slider movement (about $10^{3}$ steps per charge; a governor run costs roughly thirty model steps per time step because of the trial simulations of Section~\ref{sec:rg}).
+
+\subsection{Time step}
+With a base step $\Delta t_0$, the step is $\Delta t_0$ for $t<1800\unit{s}$, $2\Delta t_0$ for $1800\le t<5400\unit{s}$ and $4\Delta t_0$ afterwards. The two displayed charges use $\Delta t_0=2\unit{s}$; the CC-CV sweep for the trade-off chart and the search for the fastest in-limits CC-CV rate use $\Delta t_0=4\unit{s}$. Simulations stop after at most $5\unit{h}$.
+
+%======================================================================
+\section{Charging controllers}\label{sec:rg}
+%======================================================================
+
+\subsection{Formulation}
+Both chargers are implemented by the same routine. At each time step $k$, with the full state $x_k$ known, the applied current is the largest value in $[0,I_{\max}]$ for which the model predicts that every constrained output stays admissible over a look-ahead of $H$ steps under that constant current:
+\begin{equation}
+I_k=\max\Bigl\{\,I\in[0,I_{\max}]\ :\ y\bigl(\hat x_{k+h|k}(I),I\bigr)\in\mathcal Y,\quad h=1,\dots,H\Bigr\}, \label{eq:rg}
+\end{equation}
+where $\hat x_{k+h|k}(I)$ is obtained by applying the model step of Section~\ref{sec:order} $h$ times from $x_k$ with current $I$, and $y$ is the output map evaluated at the end of each step. Writing $I_k=\beta_kI_{\max}$ with $\beta_k\in[0,1]$, this is the modified reference governor of Perez et al.~\cite{perez2015}: the reference is the charger's maximum current $I_{\max}$ and $\beta_k$ is the largest admissible scaling. See \cite{garone2017} for the general theory of reference governors.
+
+\paragraph{Reference governor.} The admissible set constrains internal states:
+\begin{equation}
+\mathcal Y_{\mathrm{RG}}=\Bigl\{\ \etapl\ge\eta_{\min},\quad T\le T_{\max},\quad \ce(0)\ge c_{e,\min},\quad \Phi_p\le\Phi_{p,\max},\quad \theta_{ss,n}\le\theta_{n,\max}\ \Bigr\},\label{eq:Yrg}
+\end{equation}
+with look-ahead $H=3$ steps. Here $\ce(0)$ is the first electrolyte cell (anode current collector), $\Phi_{p,\max}=U_p(\theta_{p,100})$ is the cathode's rest potential at 100\,\% SOC, $c_{e,\min}=100\unit{mol\,m^{-3}}$ and $\theta_{n,\max}=0.99$. The limits $\eta_{\min}$ and $T_{\max}$ are user inputs (defaults $+5\unit{mV}$ and $45\,^{\circ}\mathrm{C}$). There is \emph{no terminal-voltage constraint}; the cathode-potential constraint plays that role.
+
+\paragraph{CC-CV.} The admissible set is $\mathcal Y_{\mathrm{CCCV}}=\{V\le V_{\max}\}$ with $H=1$ and $I_{\max}$ equal to the CC current. While the predicted voltage is below $V_{\max}$ this returns $I_{\max}$ (constant current); afterwards it returns the current that places the end-of-step voltage at $V_{\max}$ to within the bisection tolerance (constant voltage).
+
+\subsection{Algorithm}
+Problem (\ref{eq:rg}) is solved by bisection on $I$, assuming that admissibility is monotone in the current (if $I$ is admissible, so is every smaller current). The bracket is warm-started around the previous current. Algorithm~\ref{alg:rg} is the procedure exactly as implemented in \code{simulate()}.
+
+\begin{algorithm}[H]
+\caption{Closed-loop charge with the scalar reference governor (and CC-CV)}\label{alg:rg}
+\begin{algorithmic}[1]
+\Require initial state $x_0$ (rest at $\mathrm{SOC}_0$, $T=\Tamb$), target $\mathrm{SOC}_T$, $I_{\max}$, horizon $H$, admissible set $\mathcal Y$
+\State $I_{\mathrm{prev}}\gets I_{\max}$;\quad $t\gets0$;\quad $t_{\mathrm{stall}}\gets0$
+\Function{Trial}{$I$} \Comment{forward simulation on a copy of the state}
+  \State $\tilde x\gets x$
+  \For{$h=1,\dots,H$}
+    \State $(\tilde x,y)\gets\textsc{Step}(\tilde x,I,\Delta t,\Tamb)$
+    \If{$y\notin\mathcal Y$} \State record first violated constraint;\ \Return false \EndIf
+  \EndFor
+  \State \Return true
+\EndFunction
+\While{$t<t_{\max}$}
+  \State choose $\Delta t$ from the schedule for the current $t$
+  \If{\Call{Trial}{$I_{\max}$}}
+    \State $I\gets I_{\max}$ \Comment{no constraint active}
+  \Else
+    \State $lo\gets0$;\quad $hi\gets I_{\max}$
+    \State $a\gets\max(0,\,I_{\mathrm{prev}}-0.04\,I_{\max})$;\quad $b\gets\min(I_{\max},\,I_{\mathrm{prev}}+0.04\,I_{\max})$ \Comment{warm start}
+    \If{$a>0$} \textbf{if} \Call{Trial}{$a$} \textbf{then} $lo\gets a$ \textbf{else} $hi\gets a$ \EndIf
+    \If{$hi>b$ \textbf{and} $b>lo$} \textbf{if} \Call{Trial}{$b$} \textbf{then} $lo\gets b$ \textbf{else} $hi\gets b$ \EndIf
+    \State $n\gets0$
+    \While{$n<12$ \textbf{and} $hi-lo>2\times10^{-3}\,I_{\max}$}
+      \State $m\gets(lo+hi)/2$;\quad \textbf{if} \Call{Trial}{$m$} \textbf{then} $lo\gets m$ \textbf{else} $hi\gets m$;\quad $n\gets n+1$
+    \EndWhile
+    \State $I\gets lo$;\quad active constraint $\gets$ the one violated by \Call{Trial}{$hi$}
+  \EndIf
+  \State $(x,y)\gets\textsc{Step}(x,I,\Delta t,\Tamb)$;\quad $t\gets t+\Delta t$;\quad $I_{\mathrm{prev}}\gets I$;\quad record $y$
+  \If{$\mathrm{SOC}\ge\mathrm{SOC}_T$} \textbf{stop} (target reached) \EndIf
+  \If{$I<Q/20$} $t_{\mathrm{stall}}\gets t_{\mathrm{stall}}+\Delta t$ \textbf{else} $t_{\mathrm{stall}}\gets0$ \EndIf
+  \If{$t_{\mathrm{stall}}\ge120\unit{s}$} \textbf{stop} (current collapsed below C/20) \EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Implementation notes.}
+\begin{itemize}[leftmargin=*]
+\item The constraints in (\ref{eq:Yrg}) are tested in the order written; the first one violated by the upper end of the final bracket is reported as the active constraint.
+\item $I=0$ is assumed admissible and is never tested. If the constraints are already violated at rest (for example $T_{\max}\le\Tamb$), the governor returns $I\approx0$ and the charge stops through the C/20 rule.
+\item The resolution of the current is $2\times10^{-3}I_{\max}$. The governor therefore rides its active constraint from the admissible side with a small sawtooth; reported minima such as ``$\min\etapl=+5.0\unit{mV}$'' hold to that resolution.
+\item The look-ahead is $H\Delta t$ ($6\unit{s}$ at the base step, longer once the step coarsens). Constraints are checked only at step ends, and the prediction uses the same model and the same $\Tamb$ as the plant: there is no model mismatch, no state estimator, and no robustness margin other than the user's choice of $\eta_{\min}$ and $T_{\max}$. Recursive feasibility is not proven; in practice the short horizon suffices because the constrained outputs respond to the current almost instantaneously ($\etapl$, $\Phi_p$ through the kinetic and ohmic terms) or slowly and monotonically ($T$, $\ce$).
+\item When a constraint is active, a governor step costs one trial at $I_{\max}$, two warm-start trials and about six bisection trials (the warm-start bracket is $0.08\,I_{\max}$ wide), each of up to $H=3$ model steps.
+\end{itemize}
+
+\subsection{Derived comparisons shown in the tool}
+\begin{itemize}[leftmargin=*]
+\item \textbf{Capacity lost} is $Q_{\mathrm{sei}}+Q_{\mathrm{pl}}$ at the end of the charge; \textbf{time below zero} is the sum of the step sizes whose end-of-step $\etapl<0$.
+\item \textbf{Trade-off curve.} CC-CV charges at a fixed list of C-rates (NMC: 0.5 to 3C; LFP: 0.5 to 6C) with $\Delta t_0=4\unit{s}$.
+\item \textbf{Fastest in-limits CC-CV.} The largest CC rate $c\in[0.1,c_{\mathrm{hi}}]$ whose whole trajectory satisfies $\min_t\etapl\ge\eta_{\min}-0.1\unit{mV}$ and $\max_tT\le T_{\max}+0.02\unit{K}$, found by 7 bisection steps on $c$ ($c_{\mathrm{hi}}=3$ for NMC, 6 for LFP), with $\Delta t_0=4\unit{s}$.
+\end{itemize}
+
+%======================================================================
+\section{Parameter values}\label{sec:params}
+%======================================================================
+
+Two cells are implemented. Table~\ref{tab:electrode} lists the electrode parameters, Table~\ref{tab:cell} the cell-level, thermal and side-reaction parameters, and Table~\ref{tab:ctrl} the discretisation and controller settings. Source tags:
+\begin{description}[itemsep=1pt]
+\item[C] Chen et al.\ 2020~\cite{chen2020} (LG M50), checked against PyBaMM's \code{Chen2020.py}~\cite{pybamm}.
+\item[O] O'Kane et al.\ 2022~\cite{okane2022} (same cell), checked against PyBaMM's \code{OKane2022.py}.
+\item[P] PyBaMM's \code{Prada2013.py} (PyBaMM 26.10), which attributes its values to Prada et al.\ 2013~\cite{prada2013} and borrows the graphite open-circuit potential and kinetics from~\cite{chen2020}, the LiFePO$_4$ open-circuit potential from~\cite{afshar2017} and the LiFePO$_4$ kinetics from~\cite{kashkooli2017}. The full text of~\cite{prada2013} was not available when this set was assembled, so these values rest on PyBaMM's transcription.
+\item[P12] Prada et al.\ 2012~\cite{prada2012} (same A123 cell), Tables III and V.
+\item[A] Assumption made for this tool.
+\item[D] Derived from the other values via (\ref{eq:Q}).
+\end{description}
+
+\begin{table}[ht]
+\centering\small
+\caption{Electrode and separator parameters (reference temperature $298.15\unit{K}$).}\label{tab:electrode}
+\begin{tabular}{@{}l c ccc c ccc@{}}
+\toprule
+ & & \multicolumn{3}{c}{NMC cell (LG M50)} & & \multicolumn{3}{c}{LFP cell (A123 26650)}\\
+\cmidrule{3-5}\cmidrule{7-9}
+Parameter & Unit & Anode & Sep. & Cathode & & Anode & Sep. & Cathode\\
+\midrule
+Thickness $L$ & $\mu$m & 85.2 & 12 & 75.6 & & 34 & 25 & 80\\
+Electrolyte fraction $\eps_e$ & -- & 0.25 & 0.47 & 0.335 & & 0.36 & 0.45 & 0.426\\
+Active fraction $\eps_s$ & -- & 0.75 & -- & 0.665 & & 0.58 & -- & 0.374\\
+Particle radius $R$ & $\mu$m & 5.86 & -- & 5.22 & & 5 & -- & 0.05\\
+$c_{\max}$ & mol\,m$^{-3}$ & 33133 & -- & 63104 & & 30555 & -- & 22806\\
+$D_s$ & m$^2$\,s$^{-1}$ & $3.3\!\times\!10^{-14}$ & -- & $4.0\!\times\!10^{-15}$ & & $3.0\!\times\!10^{-15}$ & -- & $5.9\!\times\!10^{-18}$\\
+$E$ of $D_s$ & kJ\,mol$^{-1}$ & 30.3 & -- & 25 & & 35 & -- & 39\\
+$k$ & (see note) & $6.48\!\times\!10^{-7}$ & -- & $3.42\!\times\!10^{-6}$ & & $6.48\!\times\!10^{-7}$ & -- & $6\!\times\!10^{-7}$\\
+$E$ of $k$ & kJ\,mol$^{-1}$ & 35 & -- & 17.8 & & 35 & -- & 39.57\\
+$\sigma$ & S\,m$^{-1}$ & 215 & -- & 0.18 & & 215 & -- & 0.33795\\
+$\theta$ at 0\,\% SOC & -- & 0.0279 & -- & 0.8490 (D) & & 0.0188 (D) & -- & 0.7025 (D)\\
+$\theta$ at 100\,\% SOC & -- & 0.9014 & -- & 0.2661 & & 0.81 & -- & 0.0038\\
+\midrule
+Source & & \multicolumn{3}{c}{C; $E$ of $D_s$ from O} & & \multicolumn{3}{c}{P; $E$ of $D_s$ from P12}\\
+\bottomrule
+\end{tabular}
+
+\smallskip
+\raggedright\footnotesize Note: $k$ has units A\,m$^{-2}$(m$^3$\,mol$^{-1}$)$^{1.5}$, so that (\ref{eq:i0}) gives $i_0$ in A\,m$^{-2}$.
+\end{table}
+
+\begin{table}[ht]
+\centering\small
+\caption{Cell-level, electrolyte, thermal and side-reaction parameters.}\label{tab:cell}
+\begin{tabular}{@{}l c l l@{}}
+\toprule
+Parameter & Unit & NMC cell & LFP cell\\
+\midrule
+Plate area $A$ & m$^2$ & 0.1027~(C) & 0.18~(P)\\
+Capacity $Q$, eq.\ (\ref{eq:Q}) & Ah & 5.0904~(D) & 2.2999~(D)\\
+Initial electrolyte conc.\ $c_{e,0}$ & mol\,m$^{-3}$ & 1000~(C) & 1200~(P)\\
+Transference number $t_+$ & -- & 0.2594~(C) & 0.36~(P)\\
+Bruggeman exponent $b$ (electrolyte) & -- & 1.5~(C) & 1.5~(P)\\
+Bruggeman exponent $b_s$ (solid) & -- & 0~(C) & 1.5~(P)\\
+$D_e(\ce)$, $\kappa(\ce)$ & & eqs.\ (\ref{eq:nymanD})--(\ref{eq:nymanK})~(C) & eqs.\ (\ref{eq:pradaD})--(\ref{eq:pradaK})~(P)\\
+$E$ of $D_e$ & kJ\,mol$^{-1}$ & 17~(O) & 26.6~(P12)\\
+$E$ of $\kappa$ & kJ\,mol$^{-1}$ & 17~(O) & 11~(P12)\\
+Heat capacity $C_{\mathrm{th}}$ & J\,K$^{-1}$ & 68~(A) & 77~(P12)\\
+Cooling surface $A_s$ & m$^2$ & $5.31\times10^{-3}$~(C) & $6.34\times10^{-3}$~(P12)\\
+Convection coefficient $h$ & W\,m$^{-2}$K$^{-1}$ & 25 (user input)~(A) & 25 (user input)~(A)\\
+$i_{0,\mathrm{sei}}$ & A\,m$^{-2}$ & $1.5\times10^{-7}$~(O) & $1.5\times10^{-7}$~(O)\\
+$U_{\mathrm{sei}}$ & V & 0.4~(O) & 0.4~(O)\\
+$\alpha_{\mathrm{sei}}$ & -- & 0.5~(O) & 0.5~(O)\\
+$E$ of SEI rate & kJ\,mol$^{-1}$ & 38~(O) & 38~(O)\\
+$i_{0,\mathrm{pl}}$ & A\,m$^{-2}$ & 0.01~(A) & 0.01~(A)\\
+$\alpha_{\mathrm{pl}}$ & -- & 0.5~(A) & 0.5~(A)\\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Derived quantities, for checking a re-implementation}}\\
+Anode active surface $S_n$ & m$^2$ & 3.3597 & 2.1298\\
+Cathode active surface $S_p$ & m$^2$ & 2.967 & 323.14\\
+Solid resistance $R_s$ & m$\Omega$ & 1.3645 & 1.0086\\
+$U_{\mathrm{ocv}}$ at 0 / 10 / 100\,\% SOC & V & 2.5457 / 3.3009 / 4.1929 & 2.0450 / 2.9816 / 3.5984\\
+$\Phi_{p,\max}=U_p(\theta_{p,100})$ & V & 4.2849 & 3.6904\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering\small
+\caption{Discretisation, controller settings and default scenario.}\label{tab:ctrl}
+\begin{tabular}{@{}l l l@{}}
+\toprule
+Setting & NMC cell & LFP cell\\
+\midrule
+Radial shells $N_r$ per particle & \multicolumn{2}{c}{20}\\
+Electrolyte cells $N_n+N_s+N_p$ & \multicolumn{2}{c}{$10+3+10$}\\
+Base time step $\Delta t_0$ & \multicolumn{2}{c}{2 s (4 s for sweeps)}\\
+Electrolyte floor $c_{\mathrm{fl}}$ & \multicolumn{2}{c}{1 mol\,m$^{-3}$}\\
+Governor horizon $H$ & \multicolumn{2}{c}{3 steps}\\
+Governor $c_{e,\min}$, $\theta_{n,\max}$ & \multicolumn{2}{c}{100 mol\,m$^{-3}$, 0.99}\\
+Governor $\eta_{\min}$, $T_{\max}$ (defaults) & \multicolumn{2}{c}{$+5$ mV, 45\,$^\circ$C}\\
+Governor $I_{\max}$ (default) & 3C & 4C\\
+CC-CV rate (default) & 1C & 2C\\
+CC-CV voltage $V_{\max}$ (default) & 4.20 V & 3.60 V\\
+Scenario (default) & \multicolumn{2}{c}{10\,\% $\rightarrow$ 80\,\% SOC, $\Tamb=25\,^\circ$C, $h=25$ W\,m$^{-2}$K$^{-1}$}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Open-circuit potentials}
+\paragraph{Graphite-SiO$_x$ anode (both cells), from~\cite{chen2020}:}
+\begin{multline}
+U_n(\theta)=1.9793\,e^{-39.3631\,\theta}+0.2482-0.0909\tanh\!\bigl(29.8538(\theta-0.1234)\bigr)\\
+-0.04478\tanh\!\bigl(14.9159(\theta-0.2769)\bigr)-0.0205\tanh\!\bigl(30.4444(\theta-0.6103)\bigr).
+\end{multline}
+\paragraph{NMC811 cathode, from~\cite{chen2020}:}
+\begin{multline}
+U_p^{\mathrm{NMC}}(\theta)=-0.8090\,\theta+4.4875-0.0428\tanh\!\bigl(18.5138(\theta-0.5542)\bigr)\\
+-17.7326\tanh\!\bigl(15.7890(\theta-0.3117)\bigr)+17.5842\tanh\!\bigl(15.9308(\theta-0.3120)\bigr).
+\end{multline}
+\paragraph{LiFePO$_4$ cathode, as coded in PyBaMM's \code{Prada2013.py}:}
+\begin{equation}
+U_p^{\mathrm{LFP}}(\theta)=3.4077-0.020269\,\theta+0.5\,e^{-150\,\theta}-0.9\,e^{-30(1-\theta)}.
+\end{equation}
+PyBaMM attributes this fit to~\cite{afshar2017}. In the arXiv text of~\cite{afshar2017}, as read when assembling this set, the first exponential of the discharge fit is $e^{-200\theta}$; the PyBaMM form is used here so that the two codes can be compared directly. The difference matters only for $\theta\lesssim0.03$ (the last few percent of charge).
+
+\subsection{Electrolyte properties}
+\paragraph{NMC cell} (LiPF$_6$ in EC:EMC 3:7, Nyman et al.~\cite{nyman2008} as used in~\cite{chen2020}), with $y=\ce/1000$ (mol\,L$^{-1}$):
+\begin{align}
+D_e&=8.794\times10^{-11}\,y^{2}-3.972\times10^{-10}\,y+4.862\times10^{-10}\quad[\mathrm{m^2\,s^{-1}}], \label{eq:nymanD}\\
+\kappa&=0.1297\,y^{3}-2.51\,y^{1.5}+3.329\,y\quad[\mathrm{S\,m^{-1}}]. \label{eq:nymanK}
+\end{align}
+\paragraph{LFP cell} (as coded in PyBaMM's \code{Prada2013.py}), with $z=\ce\times10^{-6}$:
+\begin{align}
+D_e&=2\times10^{-10}\quad[\mathrm{m^2\,s^{-1}}], \label{eq:pradaD}\\
+\kappa&=\bigl(4.1253\times10^{-4}+5.007\,z-4721.2\,z^{2}+1.5094\times10^{6}\,z^{3}-1.6018\times10^{8}\,z^{4}\bigr)\times10^{3}\quad[\mathrm{S\,m^{-1}}]. \label{eq:pradaK}
+\end{align}
+For example $\kappa(1200)=1.898\unit{S\,m^{-1}}$. The thermodynamic factor is 1 for both cells.
+
+\subsection{Remarks on the parameter sets}
+\begin{itemize}[leftmargin=*]
+\item \textbf{NMC capacity window.} The stoichiometry limits tabulated in~\cite{chen2020} give different capacities for the two electrodes. Here the anode window defines the capacity and the cathode's 0\,\% stoichiometry is recomputed from (\ref{eq:Q}) (0.8490 instead of 0.9084). The cathode stoichiometry at 100\,\% SOC (0.2661) was not re-checked against the paper; PyBaMM's initial condition corresponds to 0.2700.
+\item \textbf{NMC heat capacity.} $C_{\mathrm{th}}=68\unit{J\,K^{-1}}$ assumes a 68\,g cell at $1000\unit{J\,kg^{-1}K^{-1}}$. The layer properties in~\cite{chen2020} give about $43\unit{J\,K^{-1}}$.
+\item \textbf{LFP capacity window.} PyBaMM's file gives the 100\,\% stoichiometries. The anode's 0\,\% value is set here so that the window holds the nominal 2.3\,Ah; the cathode's follows from (\ref{eq:Q}).
+\item \textbf{LFP values not from Prada et al.} The graphite open-circuit potential and both exchange-current laws are borrowed (see tag P). Reference~\cite{prada2012} itself uses constant exchange-current densities ($0.5$ and $0.05\unit{A\,m^{-2}}$) and activation energies of 20 and 13\,kJ\,mol$^{-1}$ for charge transfer, lists three literature values (39, 43.8, 50.7\,kJ\,mol$^{-1}$) for the activation energy of $D_s$ in LiFePO$_4$ of which the first is used here, and its web text gives $D_{s,p}=5.9\times10^{-20}\unit{m^2\,s^{-1}}$ where PyBaMM has $5.9\times10^{-18}$.
+\item \textbf{LFP physics.} LiFePO$_4$ is phase-separating. Fickian diffusion in a sphere with a single-valued open-circuit curve ignores the two-phase front and the charge/discharge hysteresis.
+\item \textbf{Side reactions.} The SEI constants are generic values from~\cite{okane2022}, not fitted to either cell; the plating constants are assumed. Capacity-loss figures are meaningful as comparisons between controllers, not as lifetime predictions.
+\end{itemize}
+
+%======================================================================
+\section{Verification and benchmark results}\label{sec:verification}
+%======================================================================
+
+\subsection{Lithium conservation}
+With the side reactions switched off ($i_{0,\mathrm{sei}}=i_{0,\mathrm{pl}}=0$), the script \code{tests/conservation.js} monitors
+\begin{equation}
+n_s=\sum_{j\in\{n,p\}}\eps_{s,j}L_jA\,\bar c_s^{j},\qquad
+n_e=A\sum_{j}\eps_j\Delta x_j\,c_j,\qquad
+e_Q=\Bigl|\,\eps_{s,n}L_nA\,(\bar c_s^{n}-\bar c_{s,0}^{n})-\frac{1}{F}\sum_k I^{k}\Delta t^{k}\Bigr|\Big/n_s
+\end{equation}
+over 14 inputs per cell (constant current from 1C to 4C, discharge, random $\pm3$C pulses with random step sizes, a sinusoid, rest, and closed-loop CC-CV and governor runs from $-10$ to $25\,^\circ$C, including cases that deplete the electrolyte). The largest relative drifts are $5\times10^{-14}$ for $n_s$, $7\times10^{-13}$ for $n_e$ and $2\times10^{-14}$ for $e_Q$, i.e.\ floating-point round-off. Inventories at 10\,\% SOC: NMC $n_s=0.282696$\,mol, $n_e=5.3677\times10^{-3}$\,mol; LFP $n_s=0.088318$\,mol, $n_e=1.24351\times10^{-2}$\,mol.
+
+\subsection{Cross-check against PyBaMM}\label{sec:crosscheck}
+The scripts \code{tests/crosscheck\_export.js} and \code{tests/crosscheck\_pybamm.py} compare matched cases against PyBaMM 26.10~\cite{pybamm} (its SPMe and DFN models). For a like-for-like comparison the side reactions and the temperature dependences that this tool adds to transport are switched off.
+\begin{itemize}[leftmargin=*]
+\item \textbf{NMC cell (Chen2020 set).} Voltage within 0.4--4\,mV RMS of PyBaMM's SPMe up to 1.5C and 3--16\,mV RMS of its DFN (PyBaMM's own SPMe is 3--13\,mV from its DFN); anode surface stoichiometry within 0.003; temperature within 0.1--2.3\,K RMS provided PyBaMM's ``heat of mixing'' option is enabled, consistent with (\ref{eq:thermal}). The plating overpotential (\ref{eq:etapl}) differs from the DFN by 3--13\,mV RMS and reads up to about 13\,mV \emph{high} through the middle of a charge. Replaying the default governor current ($\eta_{\min}=5$\,mV) in the DFN gives a minimum of $-8.0$\,mV; with $\eta_{\min}=15$\,mV the DFN minimum is $+2.1$\,mV.
+\item \textbf{LFP cell (Prada2013 set, isothermal).} Voltage within 3--13\,mV RMS of both PyBaMM models, dominated by a start-up transient in the anode surface concentration that 20 radial points resolve coarsely in both codes (they agree within 2\,mV when both use 80); below 1\,mV after 2\,min at 1C. The minimum of (\ref{eq:etapl}) agrees with the DFN within 0.5\,mV up to 2C and in the governor replay ($+5.0$ against $+5.2$\,mV).
+\end{itemize}
+
+\subsection{Benchmark results}
+Table~\ref{tab:bench} gives the results of the default scenario for both cells, computed with the settings of Table~\ref{tab:ctrl}. A re-implementation that follows Sections~\ref{sec:model}--\ref{sec:rg} should reproduce these closely; differences in the last digits can arise from the bisection path and from floating-point details.
+
+\begin{table}[ht]
+\centering\small
+\caption{Benchmark: 10\,\%\,$\rightarrow$\,80\,\% SOC at $\Tamb=25\,^\circ$C, $h=25\unit{W\,m^{-2}K^{-1}}$, $\Delta t_0=2\unit{s}$.}\label{tab:bench}
+\begin{tabular}{@{}l rr c rr@{}}
+\toprule
+ & \multicolumn{2}{c}{NMC cell} & & \multicolumn{2}{c}{LFP cell}\\
+\cmidrule{2-3}\cmidrule{5-6}
+Quantity & CC-CV 1C & Governor & & CC-CV 2C & Governor\\
+\midrule
+Charge time [s] & 2580 & 1662 & & 1260 & 1080\\
+Final SOC [--] & 0.8004 & 0.8002 & & 0.8000 & 0.8001\\
+$Q_{\mathrm{sei}}$ [mAh] & 0.3565 & 0.3558 & & 0.2044 & 0.2179\\
+$Q_{\mathrm{pl}}$ [mAh] & 0.2907 & 0.0000 & & 0.4989 & 0.0000\\
+$\min\etapl$ [mV] & $-9.48$ & $+5.00$ & & $-17.85$ & $+5.00$\\
+Time with $\etapl<0$ [s] & 276 & 0 & & 462 & 0\\
+Peak temperature [$^\circ$C] & 33.36 & 41.94 & & 28.91 & 30.49\\
+Peak voltage [V] & 4.2000 & 4.2100 & & 3.4352 & 3.4154\\
+Peak current [C] & 1.000 & 3.000 & & 2.000 & 4.000\\
+\midrule
+\multicolumn{6}{@{}l}{\emph{Governor: time each limit was active} [s]}\\
+\quad none ($I=I_{\max}$) & & 12 & & & 54\\
+\quad plating overpotential & & 1602 & & & 1026\\
+\quad electrolyte depletion & & 48 & & & 0\\
+\midrule
+\multicolumn{6}{@{}l}{\emph{Fastest CC-CV inside the governor's $\etapl$ and $T$ limits} ($\Delta t_0=4$\,s)}\\
+\quad rate [C] / time [s] & \multicolumn{2}{r}{0.7117 / 3544} & & \multicolumn{2}{r}{1.3445 / 1880}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Known limitations}
+\begin{itemize}[leftmargin=*]
+\item The SPMe assumes a uniform reaction current in each electrode. It loses validity when the electrolyte depletes at the anode (for the NMC cell, constant current of roughly 2--3C at $25\,^\circ$C, or lower rates when cold).
+\item The single-particle estimate (\ref{eq:etapl}) of the plating overpotential cannot capture that particles next to the separator fill first. For the NMC cell this is a 10\,mV-scale error (Section~\ref{sec:crosscheck}).
+\item The governor has perfect knowledge of the state. A practical implementation needs a state observer (for example~\cite{moura2017}) and margins for model error.
+\item Aging is tallied but not fed back, so the model cannot be cycled as is.
+\end{itemize}
+
+%======================================================================
+\begin{thebibliography}{99}\small
+
+\bibitem{moura2017} S. J. Moura, F. Bribiesca Argomedo, R. Klein, A. Mirtabatabaei, M. Krstic, ``Battery state estimation for a single particle model with electrolyte dynamics,'' \emph{IEEE Trans.\ Control Syst.\ Technol.} 25(2), 453--468, 2017. doi:10.1109/TCST.2016.2571663
+
+\bibitem{marquis2019} S. G. Marquis, V. Sulzer, R. Timms, C. P. Please, S. J. Chapman, ``An asymptotic derivation of a single particle model with electrolyte,'' \emph{J.\ Electrochem.\ Soc.} 166(15), A3693--A3706, 2019.
+
+\bibitem{doyle1993} M. Doyle, T. F. Fuller, J. Newman, ``Modeling of galvanostatic charge and discharge of the lithium/polymer/insertion cell,'' \emph{J.\ Electrochem.\ Soc.} 140(6), 1526--1533, 1993.
+
+\bibitem{chen2020} C.-H. Chen, F. Brosa Planella, K. O'Regan, D. Gastol, W. D. Widanage, E. Kendrick, ``Development of experimental techniques for parameterization of multi-scale lithium-ion battery models,'' \emph{J.\ Electrochem.\ Soc.} 167(8), 080534, 2020.
+
+\bibitem{nyman2008} A. Nyman, M. Behm, G. Lindbergh, ``Electrochemical characterisation and modelling of the mass transport phenomena in LiPF$_6$--EC--EMC electrolyte,'' \emph{Electrochim.\ Acta} 53(22), 6356--6365, 2008.
+
+\bibitem{okane2022} S. E. J. O'Kane et al., ``Lithium-ion battery degradation: how to model it,'' \emph{Phys.\ Chem.\ Chem.\ Phys.} 24, 7909--7922, 2022. doi:10.1039/D2CP00417H
+
+\bibitem{bernardi1985} D. Bernardi, E. Pawlikowski, J. Newman, ``A general energy balance for battery systems,'' \emph{J.\ Electrochem.\ Soc.} 132(1), 5--12, 1985.
+
+\bibitem{ramadass2004} P. Ramadass, B. Haran, P. M. Gomadam, R. White, B. N. Popov, ``Development of first principles capacity fade model for Li-ion cells,'' \emph{J.\ Electrochem.\ Soc.} 151(2), A196, 2004.
+
+\bibitem{arora1999} P. Arora, M. Doyle, R. E. White, ``Mathematical modeling of the lithium deposition overcharge reaction in lithium-ion batteries using carbon-based negative electrodes,'' \emph{J.\ Electrochem.\ Soc.} 146(10), 3543--3553, 1999.
+
+\bibitem{yang2017} X.-G. Yang, Y. Leng, G. Zhang, S. Ge, C.-Y. Wang, ``Modeling of lithium plating induced aging of lithium-ion batteries: transition from linear to nonlinear aging,'' \emph{J.\ Power Sources} 360, 28--40, 2017.
+
+\bibitem{perez2015} H. E. Perez, N. Shahmohammadhamedani, S. J. Moura, ``Enhanced performance of Li-ion batteries via modified reference governors and electrochemical models,'' \emph{IEEE/ASME Trans.\ Mechatronics} 20(4), 1511--1520, 2015. doi:10.1109/TMECH.2014.2379695
+
+\bibitem{garone2017} E. Garone, S. Di Cairano, I. Kolmanovsky, ``Reference and command governors for systems with constraints: a survey on theory and applications,'' \emph{Automatica} 75, 306--328, 2017.
+
+\bibitem{pybamm} V. Sulzer, S. G. Marquis, R. Timms, M. Robinson, S. J. Chapman, ``Python Battery Mathematical Modelling (PyBaMM),'' \emph{J.\ Open Res.\ Softw.} 9(1), 14, 2021. Parameter files \code{Chen2020.py}, \code{OKane2022.py} (v24.1) and \code{Prada2013.py} (v26.10).
+
+\bibitem{prada2013} E. Prada, D. Di Domenico, Y. Creff, J. Bernard, V. Sauvant-Moynot, F. Huet, ``A simplified electrochemical and thermal aging model of LiFePO$_4$-graphite Li-ion batteries: power and capacity fade simulations,'' \emph{J.\ Electrochem.\ Soc.} 160(4), A616, 2013. doi:10.1149/2.053304jes
+
+\bibitem{prada2012} E. Prada, D. Di Domenico, Y. Creff, J. Bernard, V. Sauvant-Moynot, F. Huet, ``Simplified electrochemical and thermal model of LiFePO$_4$-graphite Li-ion batteries for fast charge applications,'' \emph{J.\ Electrochem.\ Soc.} 159(9), A1508, 2012. doi:10.1149/2.064209jes
+
+\bibitem{afshar2017} S. Afshar, K. Morris, A. Khajepour, ``Efficient electrochemical model for lithium-ion cells,'' arXiv:1709.03970, 2017.
+
+\bibitem{kashkooli2017} A. G. Kashkooli et al., ``Representative volume element model of lithium-ion battery electrodes based on X-ray nano-tomography,'' \emph{J.\ Appl.\ Electrochem.} 47(3), 281--293, 2017. (Cited as given in PyBaMM's \code{Prada2013.py}.)
+
+\end{thebibliography}
+
+\end{document}
