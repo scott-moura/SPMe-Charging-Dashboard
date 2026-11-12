@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fast-Charging Simulator</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10); --wash: rgba(11,11,11,.04);
+  --cccv: #eb6834; --rg: #2a78d6; --crit: #d03b3b; --good: #006300;
+  --c-imax: #b4b3ab; --c-plate: #e87ba4; --c-temp: #eda100; --c-ce: #1baf7a; --c-cath: #6250d6; --c-volt: #008300;
+  --on-temp: #0b0b0b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --wash: rgba(255,255,255,.05);
+    --cccv: #d95926; --rg: #3987e5; --crit: #e66767; --good: #0ca30c;
+    --c-imax: #55554f; --c-plate: #d55181; --c-temp: #c98500; --c-ce: #199e70; --c-cath: #9085e9; --c-volt: #008300;
+    --on-temp: #ffffff;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --wash: rgba(255,255,255,.05);
+  --cccv: #d95926; --rg: #3987e5; --crit: #e66767; --good: #0ca30c;
+  --c-imax: #55554f; --c-plate: #d55181; --c-temp: #c98500; --c-ce: #199e70; --c-cath: #9085e9; --c-volt: #008300;
+  --on-temp: #ffffff;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+h1, h2, h3, p, figure { margin: 0; }
+.top { padding: 20px 24px 14px; max-width: 1560px; margin: 0 auto; }
+.top h1 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+.top p { color: var(--ink2); margin-top: 4px; max-width: 78ch; }
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; padding: 0 24px 40px; max-width: 1560px; margin: 0 auto; align-items: start; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+
+/* ---- controls */
+.controls { position: sticky; top: 12px; padding: 14px 16px 16px; max-height: calc(100vh - 24px); overflow: auto; }
+.controls section + section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.controls h2 { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--ink2); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.ctl { margin-bottom: 12px; }
+.ctl:last-child { margin-bottom: 0; }
+.ctl label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; }
+.ctl output { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+.ctl input[type=range] { width: 100%; margin: 6px 0 0; accent-color: var(--ink2); }
+.ctl.rg input[type=range] { accent-color: var(--rg); }
+.ctl.cccv input[type=range] { accent-color: var(--cccv); }
+.ctl small { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.35; margin-top: 3px; }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.presets button, .btn { font: inherit; font-size: 12px; color: var(--ink); background: var(--wash); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+.presets button:hover, .btn:hover { background: var(--border); }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { flex: 1; font: inherit; font-size: 12.5px; padding: 6px 8px; background: transparent; color: var(--ink2); border: 0; cursor: pointer; white-space: nowrap; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); font-weight: 600; }
+.cellnote { display: block; color: var(--muted); font-size: 11.5px; line-height: 1.35; margin-top: 6px; }
+.key { display: inline-block; width: 14px; height: 3px; border-radius: 2px; flex: none; vertical-align: middle; }
+.key.cccv { background: var(--cccv); } .key.rg { background: var(--rg); }
+.key.dash { background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 7px); }
+.key.zone { height: 10px; background: color-mix(in srgb, var(--crit) 18%, transparent); border-radius: 2px; }
+
+/* ---- main column */
+main { display: grid; gap: 16px; min-width: 0; }
+.verdict { padding: 14px 18px; border-left: 4px solid var(--rg); }
+.verdict .v1 { font-size: 17px; font-weight: 600; line-height: 1.35; letter-spacing: -.005em; }
+.verdict .v2 { color: var(--ink2); margin-top: 4px; }
+.verdict .warn { color: var(--crit); margin-top: 4px; }
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.kpi { padding: 12px 14px; }
+.kpi .kl { font-size: 12px; color: var(--ink2); display: flex; justify-content: space-between; gap: 6px; }
+.kpi .kl span { color: var(--muted); white-space: nowrap; }
+.kpi .kr { display: grid; grid-template-columns: 14px 1fr auto; align-items: baseline; column-gap: 8px; margin-top: 6px; }
+.kpi .kr .key { align-self: center; }
+.kpi .kn { color: var(--ink2); font-size: 12.5px; }
+.kpi .kv { font-size: 21px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; }
+.kpi .kv small { font-size: 12px; font-weight: 500; color: var(--ink2); margin-left: 3px; }
+.kpi .kr.b .kv { font-size: 21px; }
+.kpi .ks { grid-column: 2 / 4; font-size: 11.5px; color: var(--muted); min-height: 16px; }
+.kpi .ks.bad { color: var(--crit); }
+.kpi .kd { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; font-weight: 600; min-height: 28px; }
+.kd.good { color: var(--good); } .kd.bad { color: var(--crit); } .kd.neutral { color: var(--ink2); font-weight: 500; }
+
+.row2 { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 12px; }
+figure.card { padding: 12px 14px 10px; min-width: 0; }
+figcaption { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; min-height: 22px; }
+figcaption .ft { font-weight: 650; font-size: 13.5px; }
+figcaption .fu { color: var(--muted); font-size: 12px; }
+figcaption .ro { margin-left: auto; display: flex; gap: 12px; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+figcaption .ro span { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
+figcaption .ro span.done { color: var(--muted); font-weight: 500; }
+.fsub { color: var(--muted); font-size: 11.5px; margin-top: 1px; min-height: 16px; }
+.plot { position: relative; height: 190px; margin-top: 6px; touch-action: pan-y; }
+.plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.plot .hair { position: absolute; width: 1px; background: var(--ink2); opacity: .55; pointer-events: none; display: none; }
+#pareto .plot { height: 270px; }
+#pareto.stale .plot { opacity: .55; }
+.ringkey { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--cccv); border-radius: 50%; vertical-align: -1px; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); box-shadow: 0 4px 14px rgba(0,0,0,.14); border-radius: 8px; padding: 6px 9px; font-size: 12px; white-space: nowrap; display: none; z-index: 3; }
+.tip b { font-size: 13px; } .tip div { color: var(--ink2); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: 12.5px; color: var(--ink2); padding: 2px 2px 0; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend .hint { margin-left: auto; color: var(--muted); }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+/* ---- constraint strips */
+.strips { margin-top: 12px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 10px; align-items: center; }
+.strips .sl { font-size: 12.5px; color: var(--ink2); display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.strip { display: flex; height: 30px; gap: 2px; }
+.strip i { display: flex; align-items: center; justify-content: center; font-style: normal; font-size: 11.5px; font-weight: 600; color: #fff; overflow: hidden; white-space: nowrap; border-radius: 4px; min-width: 2px; }
+.strip i.c0 { background: var(--c-imax); color: var(--ink); } .strip i.c1 { background: var(--c-plate); }
+.strip i.c2 { background: var(--c-temp); color: var(--on-temp); } .strip i.c3 { background: var(--c-ce); }
+.strip i.c4, .strip i.c5 { background: var(--c-cath); } .strip i.c6 { background: var(--c-volt); }
+.strip-axis { grid-column: 2; display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: -4px; }
+.sleg { margin-top: 12px; display: grid; gap: 5px; font-size: 12.5px; }
+.sleg div { display: grid; grid-template-columns: 12px 1fr auto auto; gap: 8px; align-items: center; }
+.sleg .sw { width: 12px; height: 12px; border-radius: 3px; }
+.sleg .pc { font-variant-numeric: tabular-nums; color: var(--ink2); min-width: 44px; text-align: right; }
+.sleg .pc b { color: var(--ink); }
+.sleg .hd { color: var(--muted); font-size: 11.5px; }
+
+/* ---- snapshot */
+.snapshot { padding: 12px 14px 12px; }
+.snaphead { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.snaphead h3 { font-size: 13.5px; font-weight: 650; }
+.snaphead output { font-variant-numeric: tabular-nums; font-weight: 650; }
+.snaphead input { flex: 1; min-width: 160px; accent-color: var(--ink2); }
+.snapgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 10px; }
+.snapgrid figure { min-width: 0; }
+.snapgrid .plot { height: 170px; }
+
+details.card { padding: 12px 16px; }
+details summary { cursor: pointer; font-weight: 650; font-size: 13.5px; }
+details[open] summary { margin-bottom: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; color: var(--ink2); white-space: normal; }
+thead th { font-weight: 650; }
+.tablewrap { overflow-x: auto; }
+.notes { color: var(--ink2); font-size: 13px; }
+.notes h4 { color: var(--ink); font-size: 13px; margin: 14px 0 4px; }
+.notes p, .notes ul { margin: 0 0 8px; max-width: 92ch; }
+.notes ul { padding-left: 18px; }
+.notes table.src { font-size: 12.5px; margin: 6px 0 12px; font-variant-numeric: normal; }
+.notes table.src th, .notes table.src td { text-align: left; white-space: normal; vertical-align: top; padding: 6px 10px 6px 0; }
+.notes table.src td:first-child { color: var(--ink); font-weight: 600; min-width: 130px; }
+.notes ol.refs { padding-left: 22px; margin: 0; max-width: 100ch; }
+.notes ol.refs li { margin-bottom: 4px; }
+.notes code { font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--wash); padding: 1px 4px; border-radius: 4px; color: var(--ink); }
+
+@media (max-width: 1180px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 0 16px 32px; }
+  .top { padding: 16px 16px 12px; }
+  .controls { position: static; max-height: none; }
+  .row2, .snapgrid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) { .grid, .kpis { grid-template-columns: minmax(0, 1fr); } .legend .hint { margin-left: 0; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Fast-charging simulator</h1>
+  <p>A reduced electrochemical model (SPMe with thermal and aging dynamics) of <span id="cellblurb">a 5 Ah NMC811 / graphite cell (LG M50)</span>, charged two ways: standard CC-CV, and a reference governor that pushes current right up to the limits on the cell's internal states.</p>
+</header>
+
+<div class="layout">
+  <aside class="controls card" aria-label="Simulation controls">
+    <section><h2>Cell</h2><div class="seg" id="cellsel" role="group" aria-label="Cell chemistry"></div><small class="cellnote" id="cellnote"></small></section>
+    <section><div class="presets" id="presets"></div><h2>Scenario</h2><div id="g-scen"></div></section>
+    <section><h2><i class="key rg"></i>Reference governor limits</h2><div id="g-rg"></div></section>
+    <section><h2><i class="key cccv"></i>CC-CV baseline</h2><div id="g-cccv"></div></section>
+  </aside>
+
+  <main>
+    <section class="verdict card" id="verdict" aria-live="polite">
+      <div class="v1" id="v1"></div><div class="v2" id="v2"></div><div class="warn" id="v3"></div>
+    </section>
+
+    <section class="kpis" id="kpis"></section>
+
+    <section class="row2">
+      <figure class="card" id="pareto">
+        <figcaption><span class="ft">Speed vs. health trade-off</span><span class="fu" id="pareto-range">every CC-CV rate from 0.5C to 3C, against the governor</span></figcaption>
+        <div class="fsub">Capacity lost this charge [mAh, log scale] against charge time [min]. Lower-left is better. <span class="ringkey"></span> marks the fastest CC-CV that stays inside the governor's plating and temperature limits.</div>
+        <div class="plot" id="pareto-plot"><div class="tip" id="pareto-tip"></div></div>
+      </figure>
+      <figure class="card" id="limits">
+        <figcaption><span class="ft">What is limiting the current?</span></figcaption>
+        <div class="fsub">CC-CV watches one proxy, terminal voltage. The governor tracks the internal states directly.</div>
+        <div class="strips">
+          <div class="sl"><i class="key cccv"></i>CC-CV</div><div class="strip" id="strip-a"></div>
+          <div class="sl"><i class="key rg"></i>Governor</div><div class="strip" id="strip-b"></div>
+          <div class="strip-axis"><span>0</span><span id="strip-end"></span></div>
+        </div>
+        <div class="sleg" id="sleg"></div>
+      </figure>
+    </section>
+
+    <div class="legend">
+      <span><i class="key cccv"></i>CC-CV</span>
+      <span><i class="key rg"></i>Reference governor</span>
+      <span><i class="key dash"></i>limit</span>
+      <span><i class="key zone"></i>violation zone</span>
+      <span class="hint">Hover or drag across any plot to read values and scrub the internal-state snapshot below.</span>
+    </div>
+    <section class="grid" id="charts"></section>
+
+    <section class="card snapshot">
+      <div class="snaphead">
+        <h3>Inside the cell at <output id="snap-t">0.0 min</output></h3>
+        <input type="range" id="scrub" min="0" max="1000" value="350" aria-label="Snapshot time">
+      </div>
+      <div class="snapgrid" id="snapgrid"></div>
+    </section>
+
+    <details class="card">
+      <summary>Comparison table and export</summary>
+      <div class="tablewrap"><table id="tbl"></table></div>
+      <p style="margin-top:10px"><button class="btn" id="csv">Export trajectories (CSV)</button></p>
+    </details>
+
+    <details class="card notes">
+      <summary>Model and assumptions</summary>
+
+      <h4>How the results are computed</h4>
+      <p>Nothing on this page is precomputed, interpolated or looked up. Every slider movement re-runs both charges from the initial state by time-stepping the model below in your browser (<code>simulate()</code> in <code>spme.js</code>, called from <code>run()</code> in <code>app.js</code>); a typical pair takes a few tens of milliseconds. The trade-off chart re-runs 15 more CC-CV charges, plus a bisection of about 9 charges for the fastest in-limits rate, shortly after you stop dragging. The time step is 2 s for the first 30 min, 4 s to 90 min and 8 s after that; the trade-off sweep uses 4 s throughout.</p>
+
+      <h4>Model equations and where they come from</h4>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Part</th><th>Equation as implemented (I &gt; 0 is charging)</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Solid diffusion</td><td><code>∂c_s/∂t = (D_s/r²) ∂/∂r(r² ∂c_s/∂r)</code>, zero flux at <code>r = 0</code>, flux <code>±I/(F·a·L·A)</code> at <code>r = R</code>. One particle per electrode, <code>a = 3ε_s/R</code>.</td><td>DFN model [3], reduced to one particle per electrode as in the SPMe [1, 2]</td></tr>
+          <tr><td>Electrolyte diffusion</td><td><code>ε_e ∂c_e/∂t = ∂/∂x(D_e(c_e,T)·ε_e^1.5 ∂c_e/∂x) ± (1 − t₊)·I/(F·A·L)</code>, uniform source in each electrode, none in the separator, zero flux at both collectors.</td><td>[3] with the uniform-reaction source of [1, 2]</td></tr>
+          <tr><td>Kinetics</td><td><code>η = ±(2RT/F)·asinh(I / (2·a·L·A·i₀))</code>, <code>i₀ = k·√c̄_e·√(c_ss·(c_max − c_ss))</code>, with <code>c̄_e</code> the electrode-averaged electrolyte concentration.</td><td>Butler–Volmer with α = 0.5 [3]; exchange-current form of [4]; electrode averaging as in [2]</td></tr>
+          <tr><td>Electrolyte potential</td><td><code>∂φ_e/∂x = −i_e/(κ(c_e,T)·ε_e^1.5) + (2RT/F)(1 − t₊) ∂ln c_e/∂x</code>, integrated numerically across the cell with <code>i_e</code> piecewise linear.</td><td>[3]. The SPMe papers [1, 2] use closed-form approximations of this integral; here it is integrated on the grid with concentration-dependent <code>κ</code>.</td></tr>
+          <tr><td>Terminal voltage</td><td><code>V = U_p(θ_p,s) + η_p − U_n(θ_n,s) − η_n + (φ̄_e,p − φ̄_e,n) + I·(L_n/3σ_n + L_p/3σ_p)/A</code></td><td>Structure of [1, 2]; the <code>L/3σ</code> solid-phase term and electrode averaging follow [2]. For the LFP cell <code>σ</code> is replaced by <code>σ·(1 − ε_e)^1.5</code>, as PyBaMM does for that parameter set.</td></tr>
+          <tr><td>Plating overpotential</td><td><code>η_pl = U_n(θ_n,s) + η_n − (φ_e(L_n) − φ̄_e,n)</code>, i.e. <code>φ_s − φ_e</code> at the anode | separator interface against Li/Li⁺.</td><td>Definition from [10]. Evaluating it at the separator interface from SPMe quantities is a construction made for this tool, not taken from [1] or [2].</td></tr>
+          <tr><td>Thermal</td><td><code>C_th·dT/dt = I·(V − U_ocv(θ̄_p, θ̄_n)) − h·A_s·(T − T_amb)</code>; <code>D_s</code>, <code>k</code>, <code>D_e</code>, <code>κ</code> and the SEI rate scale as <code>exp(E/R·(1/298.15 − 1/T))</code>.</td><td>Lumped form of the energy balance in [8], irreversible heat only (no entropic term); same coupling idea as [13]</td></tr>
+          <tr><td>SEI growth</td><td><code>i_sei = i₀,sei·exp(−0.5·F·(U_n(θ_n,s) + η_n − U_sei)/RT)</code> per unit anode surface.</td><td>Reaction-limited (Tafel) side reaction of [9], in the form used by PyBaMM [15] and [6]</td></tr>
+          <tr><td>Lithium plating</td><td><code>i_pl = i₀,pl·[exp(−0.5·F·η_pl/RT) − 1]</code> when <code>η_pl &lt; 0</code>, otherwise 0; capped at the applied current; no stripping.</td><td>Irreversible cathodic side reaction in the spirit of [10, 11]. The exact rate law and its two constants are assumptions made for this tool.</td></tr>
+          <tr><td>Reference governor</td><td>Each step: the largest <code>I ∈ [0, I_max]</code> such that a forward simulation at constant <code>I</code> keeps every constraint satisfied over the look-ahead (bisection, 3 steps).</td><td>Modified reference governor of [12]; background in [14]</td></tr>
+        </tbody>
+      </table></div>
+      <p>The equations were coded by hand from these references. The implementation has been checked for lithium conservation and cross-checked against PyBaMM; both are reported below.</p>
+
+      <h4>Parameter values, NMC cell (LG M50 21700)</h4>
+      <p>Source tags: <b>C</b> = Chen et al. 2020 [4], <b>O</b> = O'Kane et al. 2022 [6] (same LG M50 cell, adds temperature dependence and degradation), <b>A</b> = assumption made for this tool. The C and O values were checked on 2026-11-11 against the parameter files <code>Chen2020.py</code> and <code>OKane2022.py</code> shipped with PyBaMM v24.1 [15].</p>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Parameter</th><th>Anode</th><th>Separator</th><th>Cathode</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Thickness L [µm]</td><td>85.2</td><td>12</td><td>75.6</td><td>C</td></tr>
+          <tr><td>Electrolyte volume fraction ε_e</td><td>0.25</td><td>0.47</td><td>0.335</td><td>C</td></tr>
+          <tr><td>Active-material volume fraction ε_s</td><td>0.75</td><td>–</td><td>0.665</td><td>C</td></tr>
+          <tr><td>Particle radius R [µm]</td><td>5.86</td><td>–</td><td>5.22</td><td>C</td></tr>
+          <tr><td>Maximum concentration c_max [mol/m³]</td><td>33 133</td><td>–</td><td>63 104</td><td>C</td></tr>
+          <tr><td>Solid diffusivity D_s at 25 °C [m²/s]</td><td>3.3×10⁻¹⁴</td><td>–</td><td>4.0×10⁻¹⁵</td><td>C</td></tr>
+          <tr><td>Activation energy of D_s [kJ/mol]</td><td>30.3</td><td>–</td><td>25</td><td>O (anode value from Ecker et al. [7])</td></tr>
+          <tr><td>Reaction rate constant k [A m⁻² (m³/mol)^1.5]</td><td>6.48×10⁻⁷</td><td>–</td><td>3.42×10⁻⁶</td><td>C</td></tr>
+          <tr><td>Activation energy of k [kJ/mol]</td><td>35</td><td>–</td><td>17.8</td><td>C</td></tr>
+          <tr><td>Electronic conductivity σ [S/m]</td><td>215</td><td>–</td><td>0.18</td><td>C (no Bruggeman correction on the solid, as in C)</td></tr>
+          <tr><td>Open-circuit potential U(θ)</td><td>graphite-SiOx fit</td><td>–</td><td>NMC811 fit</td><td>C (analytic fits)</td></tr>
+          <tr><td>Stoichiometry at 0 % / 100 % SOC</td><td>0.0279 / 0.9014</td><td>–</td><td>0.849 / 0.2661</td><td>C for the anode. Cathode: see "Departures" below.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Electrode plate area A</td><td>0.1027 m² (1.58 m × 0.065 m)</td><td>C</td></tr>
+          <tr><td>Electrolyte: initial concentration, transference number</td><td>1000 mol/m³, t₊ = 0.2594, thermodynamic factor 1</td><td>C</td></tr>
+          <tr><td>Electrolyte D_e(c_e), κ(c_e)</td><td>Polynomial fits for LiPF₆ in EC:EMC 3:7</td><td>Nyman et al. [5], as used in C</td></tr>
+          <tr><td>Activation energy of D_e and κ</td><td>17 kJ/mol each</td><td>O</td></tr>
+          <tr><td>Bruggeman exponent (electrolyte)</td><td>1.5</td><td>C</td></tr>
+          <tr><td>Cooling surface A_s</td><td>5.31×10⁻³ m²</td><td>C</td></tr>
+          <tr><td>Heat capacity C_th</td><td>68 J/K (a 68 g cell at 1000 J/kg/K)</td><td>A. The layer densities, heat capacities and cell volume listed in C give about 43 J/K.</td></tr>
+          <tr><td>Convection coefficient h</td><td>Slider, default 25 W/m²K</td><td>A (PyBaMM's default for this cell is 10)</td></tr>
+          <tr><td>SEI: i₀,sei, U_sei, activation energy</td><td>1.5×10⁻⁷ A/m², 0.4 V, 38 kJ/mol</td><td>O. Generic values, not fitted to capacity-fade data for this cell.</td></tr>
+          <tr><td>Plating: i₀,pl, transfer coefficient</td><td>0.01 A/m², 0.5</td><td>A. For scale, the plating rate constant in O (10⁻⁹ m/s) corresponds to F·k·c_e ≈ 0.1 A/m² at 1000 mol/m³, but in a model where most plated lithium strips back.</td></tr>
+          <tr><td>Governor: electrolyte floor, anode surface ceiling</td><td>c_e ≥ 100 mol/m³ at the anode collector, θ_n,s ≤ 0.99</td><td>A</td></tr>
+          <tr><td>Governor: cathode potential ceiling</td><td>U_p(0.2661) = 4.285 V vs Li/Li⁺</td><td>A (the cathode's rest potential at 100 % SOC)</td></tr>
+          <tr><td>Discretisation</td><td>20 radial shells per particle; 10 + 3 + 10 electrolyte cells</td><td>A</td></tr>
+        </tbody>
+      </table></div>
+
+      <h4>Parameter values, LFP cell (A123 ANR26650M1, 2.3 Ah)</h4>
+      <p><b>Where the set comes from.</b> The starting point is the <code>Prada2013</code> parameter set shipped with PyBaMM [15] (file <code>Prada2013.py</code>, PyBaMM 26.10, read on 2026-11-11). PyBaMM attributes it to Prada et al. 2013 [16] and states in the file which values it had to borrow from elsewhere. That set is isothermal and has no thermal or aging parameters, so those are taken from the companion paper on the same cell, Prada et al. 2012 [17], or carried over from the NMC cell.</p>
+      <p><b>What was and was not checked.</b> The full text of [16] is behind a paywall and was not read, so the values tagged P below are PyBaMM's transcription and were not compared with the paper. The text of [17] was read on the publisher's web page (Tables III and V); the numbers were extracted from that page text, not from the PDF, so the table columns deserve a second look. Source tags: <b>P</b> = PyBaMM's <code>Prada2013.py</code>; <b>P12</b> = Prada et al. 2012 [17]; <b>C</b>, <b>O</b>, <b>A</b> as above; <b>D</b> = derived here.</p>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Parameter</th><th>Anode (graphite)</th><th>Separator</th><th>Cathode (LiFePO₄)</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Thickness L [µm]</td><td>34</td><td>25</td><td>80</td><td>P; the same values are printed in P12</td></tr>
+          <tr><td>Electrolyte volume fraction ε_e</td><td>0.36</td><td>0.45</td><td>0.426</td><td>P. P12 prints filler fractions instead; they imply 0.387 / 0.45 / 0.573.</td></tr>
+          <tr><td>Active-material volume fraction ε_s</td><td>0.58</td><td>–</td><td>0.374</td><td>P; same in P12</td></tr>
+          <tr><td>Particle radius R [µm]</td><td>5</td><td>–</td><td>0.05</td><td>P; same in P12</td></tr>
+          <tr><td>Maximum concentration c_max [mol/m³]</td><td>30 555</td><td>–</td><td>22 806</td><td>P; same in P12</td></tr>
+          <tr><td>Solid diffusivity D_s at 25 °C [m²/s]</td><td>3.0×10⁻¹⁵</td><td>–</td><td>5.9×10⁻¹⁸</td><td>P. P12 prints the same anode value; for LFP the page text of P12 reads 5.9×10⁻²⁰.</td></tr>
+          <tr><td>Activation energy of D_s [kJ/mol]</td><td>35</td><td>–</td><td>39</td><td>P12, Table V (which lists 39, 43.8 and 50.7 for LFP from three sources; the first is used)</td></tr>
+          <tr><td>Reaction rate constant k [A m⁻² (m³/mol)^1.5]</td><td>6.48×10⁻⁷</td><td>–</td><td>6×10⁻⁷</td><td>P. Not from Prada: the anode law is borrowed from C, the LFP law from Kashkooli et al. [19]. P12 itself uses constant exchange currents of 0.5 and 0.05 A/m².</td></tr>
+          <tr><td>Activation energy of k [kJ/mol]</td><td>35</td><td>–</td><td>39.57</td><td>P (they come with the borrowed rate laws). P12 lists 20 and 13.</td></tr>
+          <tr><td>Electronic conductivity σ [S/m]</td><td>215</td><td>–</td><td>0.338</td><td>P, with <code>σ_eff = σ·(1 − ε_e)^1.5</code>. P12 neglects solid-phase resistance.</td></tr>
+          <tr><td>Open-circuit potential U(θ)</td><td>graphite fit of C</td><td>–</td><td><code>3.4077 − 0.020269·θ + 0.5·e^(−150θ) − 0.9·e^(−30(1−θ))</code></td><td>P. Prada et al. measured half-cell curves but do not print a formula, so PyBaMM substitutes the LG M50 graphite fit and an LFP fit it attributes to Afshar et al. [18]. See the note on that fit below.</td></tr>
+          <tr><td>Stoichiometry at 0 % / 100 % SOC</td><td>0.0188 / 0.81</td><td>–</td><td>0.7025 / 0.0038</td><td>100 % values: P. 0 % values: D, see below. P12 reports 0.0132 / 0.811 and 0.74 / 0.035 for its own measured curves.</td></tr>
+        </tbody>
+      </table></div>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td>Electrode plate area A</td><td>0.18 m²</td><td>P; same in P12</td></tr>
+          <tr><td>Electrolyte: initial concentration, transference number</td><td>1200 mol/m³, t₊ = 0.36, thermodynamic factor 1</td><td>P (the concentration is also in P12)</td></tr>
+          <tr><td>Electrolyte diffusivity D_e</td><td>2×10⁻¹⁰ m²/s, constant</td><td>P; same in P12</td></tr>
+          <tr><td>Electrolyte conductivity κ(c_e) [S/m]</td><td><code>(4.1253×10⁻⁴ + 5.007·y − 4721.2·y² + 1.5094×10⁶·y³ − 1.6018×10⁸·y⁴)×10³</code> with <code>y = c_e·10⁻⁶</code>, c_e in mol/m³ (1.90 S/m at 1200 mol/m³)</td><td>P, copied as coded there</td></tr>
+          <tr><td>Activation energy of D_e and κ</td><td>26.6 and 11 kJ/mol</td><td>P12, Table V</td></tr>
+          <tr><td>Bruggeman exponent (electrolyte and solid)</td><td>1.5</td><td>P; same in P12</td></tr>
+          <tr><td>Heat capacity C_th</td><td>77 J/K (0.07 kg × 1100 J/kg/K)</td><td>P12, Table V</td></tr>
+          <tr><td>Cooling surface A_s</td><td>6.34×10⁻³ m²</td><td>P12, Table V</td></tr>
+          <tr><td>Convection coefficient h</td><td>Slider, default 25 W/m²K</td><td>A. P12 quotes 5–10 for free convection in air, 10–70 for forced air, above 100 for liquid cooling.</td></tr>
+          <tr><td>CC-CV voltage limit</td><td>3.6 V</td><td>P12 ("recommended by the manufacturer"); also the upper cut-off in P</td></tr>
+          <tr><td>SEI: i₀,sei, U_sei, activation energy</td><td>1.5×10⁻⁷ A/m², 0.4 V, 38 kJ/mol</td><td>O, carried over unchanged from the NMC cell. Not specific to this cell.</td></tr>
+          <tr><td>Plating: i₀,pl, transfer coefficient</td><td>0.01 A/m², 0.5</td><td>A, same assumption as for the NMC cell</td></tr>
+          <tr><td>Governor: cathode potential ceiling</td><td>U_p(0.0038) = 3.690 V vs Li/Li⁺</td><td>A (the cathode's rest potential at 100 % SOC)</td></tr>
+          <tr><td>Governor: electrolyte floor, anode surface ceiling; discretisation</td><td>Same as for the NMC cell</td><td>A</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><b>Capacity window (D).</b> PyBaMM's file gives the 100 % stoichiometries (0.81 and 0.0038) and says they were adjusted for a 2.3 Ah cell between 2.0 V and 3.6 V. Here the anode's 0 % stoichiometry (0.0188) is set so that the window holds the nominal 2.3 Ah, and the cathode's (0.7025) follows from the lithium balance. The open-circuit voltage is then 2.05 V at 0 % and 3.60 V at 100 %.</li>
+        <li><b>The LFP open-circuit fit.</b> PyBaMM's file codes the first exponential as <code>e^(−150θ)</code>. In the arXiv text of [18], as read for this note, the discharge fit has <code>e^(−200θ)</code>, with the other three terms identical. This tool follows PyBaMM so that the two can be compared directly. The term only matters below θ ≈ 0.03, that is, in the last few percent of charge, where it changes the cathode potential by up to about 50 mV.</li>
+        <li><b>LFP is a phase-separating material.</b> This model treats it like any other electrode: Fickian diffusion in a sphere and a single-valued open-circuit curve. It has no two-phase front and no charge / discharge hysteresis (about 20 mV for this material according to P12). That is the same simplification PyBaMM's set makes.</li>
+        <li><b>The anode limits this cell in the model, probably too strongly.</b> With D_s = 3×10⁻¹⁵ m²/s in 5 µm graphite particles, the anode surface fills long before the bulk. At 25 °C the model predicts plating for CC-CV above about 1.5C, while the manufacturer's data sheet lists a 10 A (4.3C) fast charge to 3.6 V (data-sheet figures as quoted in a third-party listing [20]; the data sheet itself was not readable). Since the plating constants are assumed as well, treat the LFP plating results as a comparison between controllers, not as a statement about what this cell tolerates.</li>
+        <li><b>Aging model.</b> Prada et al. 2013 [16] has its own SEI model (solvent diffusion through the film, with porosity loss). It is not implemented here; the LFP cell uses the same reaction-limited SEI law and constants as the NMC cell.</li>
+        <li><b>Reference temperature.</b> PyBaMM's set uses 298 K; this tool uses 298.15 K for both cells.</li>
+      </ul>
+
+      <h4>Departures from the published parameter set (NMC cell)</h4>
+      <ul>
+        <li><b>Cell capacity and cathode window.</b> The stoichiometry limits tabulated in C give different capacities for the two electrodes (5.09 Ah for the anode window, 5.61 Ah for the cathode window). Here the anode window defines capacity (5.09 Ah) and the cathode's 0 % stoichiometry is recomputed from the lithium balance (0.849 rather than 0.9084). This puts the open-circuit voltage at 2.55 V at 0 % and 4.19 V at 100 %.</li>
+        <li><b>Cathode stoichiometry at 100 % SOC (0.2661).</b> Quoted from C from memory and not re-checked against the paper in this pass. The PyBaMM file's initial concentration corresponds to 0.2700, which would lower the 100 % open-circuit voltage by 12 mV.</li>
+        <li><b>Aging is not fed back.</b> Lithium consumed by SEI growth and plating is tallied but not removed from the anode, and no film resistance is added. Per charge the loss is about 10⁻⁴ of capacity, so the effect on the trajectories is negligible, but this is why the model cannot be run over many cycles as is.</li>
+        <li><b>Capacity-loss numbers are comparative.</b> The SEI constants are generic and the plating constants are assumed, so read the losses as a comparison between the two controllers, not as a lifetime prediction for this cell.</li>
+        <li><b>The governor has perfect state knowledge.</b> A real implementation needs a state observer (for example [1]) and margins for model error.</li>
+        <li><b>Validity.</b> If the electrolyte fully depletes at the anode (very high CC rates, or cold), the uniform-reaction assumption behind the SPMe fails. The dashboard flags this; plating figures in that regime are indicative only.</li>
+      </ul>
+
+      <h4>Numerical method and lithium conservation</h4>
+      <p>Both diffusion equations are discretised with conservative finite volumes and stepped with implicit Euler (one tridiagonal solve each per step). Because fluxes between neighbouring volumes cancel exactly, the scheme should not create or destroy lithium. This was tested with the side reactions switched off, over constant-current charges from 1C to 4C, a 2C discharge, random ±3C pulses with random step sizes, a sinusoid, rest, and closed-loop CC-CV and governor runs from −10 °C to 25 °C, including cases that fully deplete the electrolyte:</p>
+      <ul>
+        <li>Solid-phase lithium, <code>ε_s,n·L_n·A·c̄_s,n + ε_s,p·L_p·A·c̄_s,p</code> (0.2827 mol): largest relative drift 2×10⁻¹⁴.</li>
+        <li>Electrolyte lithium, <code>A·Σ ε_e·Δx·c_e</code> (5.368×10⁻³ mol): largest relative drift 2×10⁻¹³.</li>
+        <li>Lithium gained by the anode against charge passed, <code>∫I dt / F</code>: largest relative error 2×10⁻¹⁴.</li>
+      </ul>
+      <p>The figures above are for the NMC cell. The same cases pass for the LFP cell (solid phase 0.0883 mol, electrolyte 1.2435×10⁻² mol): largest relative drift 5×10⁻¹⁴, 7×10⁻¹³ and 2×10⁻¹⁴ respectively.</p>
+      <p>These are floating-point round-off. The electrolyte concentration is kept above 1 mol/m³ by a limiter that moves lithium between neighbouring cells rather than adding it, so conservation also holds when the electrolyte depletes. The same three checks run on every simulation in this page and are reported at the bottom of the comparison table. To repeat the full test: <code>node tests/conservation.js</code>.</p>
+
+      <h4>Cross-check against PyBaMM, NMC cell</h4>
+      <p>The model was compared with PyBaMM 26.10 [15] using its Chen2020 parameter set, against both PyBaMM's own SPMe (the same model class [2]) and its full DFN model [3]. For a like-for-like comparison the extra temperature dependences this tool adds and both side reactions were switched off, and PyBaMM's lumped thermal parameters were used (42.8 J/K, 10 W/m²K). The cases were constant-current charges from 0.5C to 2C at 10, 25 and 40 °C, isothermal and with the thermal model, plus replays of the current profile each controller produces. Each charge runs from 10 % to 80 % SOC.</p>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Quantity</th><th>Against PyBaMM SPMe</th><th>Against PyBaMM DFN</th></tr></thead>
+        <tbody>
+          <tr><td>Terminal voltage, up to 1.5C</td><td>0.4–4 mV RMS (largest single difference 5–27 mV, at current steps)</td><td>3–16 mV RMS. PyBaMM's own SPMe is 3–13 mV RMS from its DFN on the same cases.</td></tr>
+          <tr><td>Anode surface stoichiometry</td><td>within 0.003</td><td>within 0.003</td></tr>
+          <tr><td>Electrolyte concentration at the anode collector</td><td>1–4 mol/m³ RMS</td><td>14–70 mol/m³ RMS, always on the low side: both SPMe models over-predict depletion, which makes the governor's electrolyte limit conservative.</td></tr>
+          <tr><td>Temperature</td><td>0.1–1.2 K RMS</td><td>0.2–2.3 K RMS</td></tr>
+          <tr><td>Plating overpotential at the anode | separator interface</td><td>not available in PyBaMM's SPMe</td><td>3–13 mV RMS, largest single difference 8–34 mV</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><b>Heat source.</b> Temperature agrees only when PyBaMM's "heat of mixing" option is switched on. This tool's <code>I·(V − U_ocv)</code> includes the heat released as concentration gradients inside the particles relax; PyBaMM's default omits it and ends 3–15 K cooler on these cases. The term is large here because solid diffusion in this cell's cathode is slow.</li>
+        <li><b>2C, isothermal.</b> The electrolyte at the anode collector depletes after about 2 min in both SPMe models but not in the DFN (which holds about 130 mol/m³). Voltage is then far off in every reduced model: PyBaMM's SPMe is 330 mV RMS from its DFN and this tool is 140 mV. This is the validity limit already flagged above.</li>
+        <li><b>Plating overpotential is the weak point.</b> A single representative particle cannot capture that particles next to the separator fill first. Compared with the DFN, the estimate used here reads up to about 13 mV too high through the middle of the charge, and too low near the end.</li>
+      </ul>
+      <p><b>What this means for the comparison on this page.</b> The dashboard's default charges were replayed in PyBaMM's DFN, with PyBaMM's parameters changed to match this tool's configuration:</p>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Charge at 25 °C</th><th>Time</th><th>Lowest plating overpotential, this tool</th><th>Lowest plating overpotential, DFN replay</th><th>Time below 0 mV in the DFN</th></tr></thead>
+        <tbody>
+          <tr><td>Governor, 5 mV limit (default)</td><td>27.7 min</td><td>+5.0 mV</td><td>−8.0 mV</td><td>5.0 min</td></tr>
+          <tr><td>Governor, 15 mV limit</td><td>32.3 min</td><td>+15.0 mV</td><td>+2.1 mV</td><td>none</td></tr>
+          <tr><td>CC-CV at 1C</td><td>43.0 min</td><td>−9.5 mV</td><td>−1.6 mV</td><td>0.9 min</td></tr>
+        </tbody>
+      </table></div>
+      <p>So at the default 5 mV limit, the "no lithium plating" result for the governor holds inside this model but not in a higher-fidelity one, and this model overstates how much 1C CC-CV plates. A limit of about 15 mV absorbs the model error: the gap between the two models' minima was 12–13 mV at both 10 °C and 25 °C ambient, and at 40 °C the temperature limit binds first. With a 15 mV limit at 25 °C the governor is still 25 % faster than 1C CC-CV. At 10 °C the picture is the expected one even at 5 mV: in the DFN, 1C CC-CV reaches −25 mV and spends 17 min below zero, against −8 mV and 9 min for the governor. To repeat the cross-check: <code>node tests/crosscheck_export.js &gt; spme_cases.json</code>, then <code>python tests/crosscheck_pybamm.py spme_cases.json</code>.</p>
+
+      <h4>Cross-check against PyBaMM, LFP cell</h4>
+      <p>The LFP cell was compared with PyBaMM 26.10 using its <code>Prada2013</code> set, isothermal (that set has no thermal parameters), with the side reactions and the temperature dependences added here switched off. Cases: constant current at 1C, 2C and 4C at 25 °C, 1C at 10 °C, and replays of the governor's and the 2C CC-CV current profiles. This checks that the parameter set is implemented as PyBaMM implements it; it does not validate the set against the real cell.</p>
+      <div class="tablewrap"><table class="src">
+        <thead><tr><th>Quantity</th><th>Against PyBaMM SPMe</th><th>Against PyBaMM DFN</th></tr></thead>
+        <tbody>
+          <tr><td>Terminal voltage</td><td>3–13 mV RMS over the charge, dominated by the start-up transient described below; under 1 mV after 2 min at 1C</td><td>3–13 mV RMS. PyBaMM's SPMe and DFN are within 0.1–1.8 mV RMS of each other for this cell.</td></tr>
+          <tr><td>Anode surface stoichiometry</td><td>0.002–0.012 RMS, largest in the first minute</td><td>–</td></tr>
+          <tr><td>Electrolyte concentration at the anode collector</td><td>0.2–1.8 mol/m³ RMS</td><td>0.3–3 mol/m³ RMS</td></tr>
+          <tr><td>Lowest plating overpotential</td><td>not available in PyBaMM's SPMe</td><td>1C: +18.3 mV here, +18.4 mV in the DFN. 2C: −32.4 against −32.0 mV. Governor replay (5 mV limit): +5.0 against +5.2 mV. 4C: −250 against −313 mV.</td></tr>
+        </tbody>
+      </table></div>
+      <ul>
+        <li><b>First-minute transient.</b> When current is first applied, the concentration at the anode particle surface rises in a boundary layer thinner than one radial shell (diffusion is slow in this anode). With 20 uniform shells this tool reads 26 mV high 2 s into a 1C charge, and PyBaMM with its default 20 points reads 17 mV low; with 80 shells in both, the two agree within 2 mV. The difference decays to under 1 mV within 2 min. It does not affect the plating minimum, which occurs late in the charge.</li>
+        <li><b>Plating overpotential.</b> Unlike the NMC cell, the single-particle estimate tracks the DFN closely here (within 0.5 mV at the minimum up to 2C). The electrodes are thin and the electrolyte hardly depletes, so the reaction is close to uniform, which is the assumption the SPMe rests on. In these isothermal cases the 13 mV allowance discussed for the NMC cell is not needed. At 4C the anode surface saturates within about a minute and the models differ in how far below zero the overpotential goes, but agree on when (8.2 against 8.1 min below zero).</li>
+      </ul>
+
+      <h4>References</h4>
+      <ol class="refs">
+        <li>S. J. Moura, F. Bribiesca Argomedo, R. Klein, A. Mirtabatabaei, M. Krstic, "Battery state estimation for a single particle model with electrolyte dynamics," <i>IEEE Trans. Control Syst. Technol.</i> 25(2), 453–468, 2017. doi:10.1109/TCST.2016.2571663</li>
+        <li>S. G. Marquis, V. Sulzer, R. Timms, C. P. Please, S. J. Chapman, "An asymptotic derivation of a single particle model with electrolyte," <i>J. Electrochem. Soc.</i> 166(15), A3693–A3706, 2019.</li>
+        <li>M. Doyle, T. F. Fuller, J. Newman, "Modeling of galvanostatic charge and discharge of the lithium/polymer/insertion cell," <i>J. Electrochem. Soc.</i> 140(6), 1526–1533, 1993.</li>
+        <li>C.-H. Chen, F. Brosa Planella, K. O'Regan, D. Gastol, W. D. Widanage, E. Kendrick, "Development of experimental techniques for parameterization of multi-scale lithium-ion battery models," <i>J. Electrochem. Soc.</i> 167(8), 080534, 2020.</li>
+        <li>A. Nyman, M. Behm, G. Lindbergh, "Electrochemical characterisation and modelling of the mass transport phenomena in LiPF₆–EC–EMC electrolyte," <i>Electrochim. Acta</i> 53(22), 6356–6365, 2008.</li>
+        <li>S. E. J. O'Kane et al., "Lithium-ion battery degradation: how to model it," <i>Phys. Chem. Chem. Phys.</i> 24, 7909–7922, 2022. doi:10.1039/D2CP00417H</li>
+        <li>M. Ecker et al., "Parameterization of a physico-chemical model of a lithium-ion battery: I. Determination of parameters," <i>J. Electrochem. Soc.</i> 162(9), A1836–A1848, 2015.</li>
+        <li>D. Bernardi, E. Pawlikowski, J. Newman, "A general energy balance for battery systems," <i>J. Electrochem. Soc.</i> 132(1), 5–12, 1985. doi:10.1149/1.2113792</li>
+        <li>P. Ramadass, B. Haran, P. M. Gomadam, R. White, B. N. Popov, "Development of first principles capacity fade model for Li-ion cells," <i>J. Electrochem. Soc.</i> 151(2), A196, 2004.</li>
+        <li>P. Arora, M. Doyle, R. E. White, "Mathematical modeling of the lithium deposition overcharge reaction in lithium-ion batteries using carbon-based negative electrodes," <i>J. Electrochem. Soc.</i> 146(10), 3543–3553, 1999.</li>
+        <li>X.-G. Yang, Y. Leng, G. Zhang, S. Ge, C.-Y. Wang, "Modeling of lithium plating induced aging of lithium-ion batteries: transition from linear to nonlinear aging," <i>J. Power Sources</i> 360, 28–40, 2017.</li>
+        <li>H. E. Perez, N. Shahmohammadhamedani, S. J. Moura, "Enhanced performance of Li-ion batteries via modified reference governors and electrochemical models," <i>IEEE/ASME Trans. Mechatronics</i> 20(4), 1511–1520, 2015. doi:10.1109/TMECH.2014.2379695</li>
+        <li>H. E. Perez, X. Hu, S. Dey, S. J. Moura, "Optimal charging of Li-ion batteries with coupled electro-thermal-aging dynamics," <i>IEEE Trans. Veh. Technol.</i> 66(9), 7761–7770, 2017. doi:10.1109/TVT.2017.2676044</li>
+        <li>E. Garone, S. Di Cairano, I. Kolmanovsky, "Reference and command governors for systems with constraints: a survey on theory and applications," <i>Automatica</i> 75, 306–328, 2017. doi:10.1016/j.automatica.2016.08.013</li>
+        <li>V. Sulzer, S. G. Marquis, R. Timms, M. Robinson, S. J. Chapman, "Python Battery Mathematical Modelling (PyBaMM)," <i>J. Open Res. Softw.</i> 9(1), 14, 2021. doi:10.5334/jors.309. Parameter files <code>Chen2020.py</code> and <code>OKane2022.py</code>, release v24.1; <code>Prada2013.py</code>, release 26.10.</li>
+        <li>E. Prada, D. Di Domenico, Y. Creff, J. Bernard, V. Sauvant-Moynot, F. Huet, "A simplified electrochemical and thermal aging model of LiFePO₄-graphite Li-ion batteries: power and capacity fade simulations," <i>J. Electrochem. Soc.</i> 160(4), A616, 2013. doi:10.1149/2.053304jes</li>
+        <li>E. Prada, D. Di Domenico, Y. Creff, J. Bernard, V. Sauvant-Moynot, F. Huet, "Simplified electrochemical and thermal model of LiFePO₄-graphite Li-ion batteries for fast charge applications," <i>J. Electrochem. Soc.</i> 159(9), A1508, 2012. doi:10.1149/2.064209jes</li>
+        <li>S. Afshar, K. Morris, A. Khajepour, "Efficient electrochemical model for lithium-ion cells," arXiv:1709.03970, 2017.</li>
+        <li>A. G. Kashkooli et al., "Representative volume element model of lithium-ion battery electrodes based on X-ray nano-tomography," <i>J. Appl. Electrochem.</i> 47(3), 281–293, 2017. Cited as given in PyBaMM's <code>Prada2013.py</code>; not read for this tool.</li>
+        <li>A123 Systems, ANR26650M1A data sheet (2.3 Ah, 3.3 V nominal; standard charge 3 A to 3.6 V, fast charge 10 A to 3.6 V), as quoted under "Official specifications" at lygte-info.dk, "A123 ANR26650M1A 2300mAh (Green)".</li>
+      </ol>
+    </details>
+  </main>
+</div>
+
+<script src="spme.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
